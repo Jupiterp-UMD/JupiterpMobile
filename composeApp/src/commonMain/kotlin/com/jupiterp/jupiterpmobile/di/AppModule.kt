@@ -2,6 +2,9 @@ package com.jupiterp.jupiterpmobile.di
 
 import com.jupiterp.jupiterpmobile.data.api.JupiterpApiClient
 import com.jupiterp.jupiterpmobile.data.repository.CourseRepository
+import com.jupiterp.jupiterpmobile.data.repository.GradesRepository
+import com.jupiterp.jupiterpmobile.data.repository.ProfessorRepository
+import com.jupiterp.jupiterpmobile.data.repository.ReviewRepository
 import com.jupiterp.jupiterpmobile.data.repository.ScheduleRepository
 import com.jupiterp.jupiterpmobile.data.repository.PreferencesRepository
 import com.jupiterp.jupiterpmobile.data.storage.LocalStorage
@@ -24,10 +27,13 @@ val appModule = module {
     single { CourseRepository(get()) }
     single { ScheduleRepository(get()) }
     single { PreferencesRepository(get()) }
+    single { GradesRepository(get()) }
+    single { ProfessorRepository(get()) }
+    single { ReviewRepository(get(), get()) }
 
     // ViewModels
-    factory { MainViewModel(get(), get()) }
-    factory { GeneratorViewModel(get(), get()) }
+    factory { MainViewModel(get(), get(), get()) }
+    factory { GeneratorViewModel(get(), get(), get()) }
 }
 
 /**

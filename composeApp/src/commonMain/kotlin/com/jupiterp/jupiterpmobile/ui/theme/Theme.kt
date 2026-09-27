@@ -80,6 +80,21 @@ object JupiterpColors {
         else -> Color(0xFFEF4444)
     }
     
+    // Grade distribution buckets, in GradeBucket order (A, B, C, D, F, W).
+    // A–F is a diverging scale — blue for good, red for poor, a neutral gray
+    // midpoint at C — and W sits off the scale in its own hue. Each mode's
+    // steps were validated separately (CVD and normal-vision separation of
+    // adjacent segments) against that mode's surface. The lighter steps are
+    // under 3:1 contrast, so every bar ships with a lettered legend.
+    val GradeBucketsLight = listOf(
+        Color(0xFF1C5CAB), Color(0xFF5598E7), Color(0xFFB5B3AC),
+        Color(0xFFE56A67), Color(0xFFA82828), Color(0xFF7A6FD0)
+    )
+    val GradeBucketsDark = listOf(
+        Color(0xFF4C90E0), Color(0xFF2360AD), Color(0xFF8B8A84),
+        Color(0xFFA52B28), Color(0xFFE2625F), Color(0xFF9085E9)
+    )
+
     // Seat availability colors
     fun seatColor(openSeats: Int, totalSeats: Int): Color {
         val ratio = if (totalSeats > 0) openSeats.toFloat() / totalSeats else 0f
@@ -105,8 +120,22 @@ data class JupiterpExtendedColors(
     val hover: Color,
     val success: Color,
     val warning: Color,
-    val scheduleColors: List<Color>
-)
+    val scheduleColors: List<Color>,
+    val gradeBuckets: List<Color> = JupiterpColors.GradeBucketsLight
+) {
+    /**
+     * Marker color for a GPA, taken from the grade scale so a 3.6 and an
+     * A-heavy bar read the same way. Used for a small dot next to the number,
+     * never for the number's text.
+     */
+    fun gpaColor(gpa: Float): Color = when {
+        gpa >= 3.5f -> gradeBuckets[0]
+        gpa >= 3.0f -> gradeBuckets[1]
+        gpa >= 2.5f -> gradeBuckets[2]
+        gpa >= 2.0f -> gradeBuckets[3]
+        else -> gradeBuckets[4]
+    }
+}
 
 val LocalJupiterpColors = staticCompositionLocalOf {
     JupiterpExtendedColors(
@@ -192,7 +221,8 @@ private val DarkExtendedColors = JupiterpExtendedColors(
     hover = JupiterpColors.HoverDark,
     success = JupiterpColors.SuccessDark,
     warning = JupiterpColors.WarningDark,
-    scheduleColors = JupiterpColors.ScheduleColors
+    scheduleColors = JupiterpColors.ScheduleColors,
+    gradeBuckets = JupiterpColors.GradeBucketsDark
 )
 
 /**

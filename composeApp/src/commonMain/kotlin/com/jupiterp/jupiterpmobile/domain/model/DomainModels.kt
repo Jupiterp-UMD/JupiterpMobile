@@ -37,10 +37,23 @@ data class Section(
     val openSeats: Int,
     val totalSeats: Int,
     val waitlist: Int,
-    val holdfile: Int?
+    val holdfile: Int?,
+    // Parallel to [instructors]; "" where the API couldn't resolve a name.
+    // Defaulted so schedules persisted before slugs existed still decode.
+    val instructorSlugs: List<String> = emptyList()
 ) {
     val isFull: Boolean
         get() = openSeats <= 0
+
+    /** Jupiterp slug for instructors[index], or null if unresolved. */
+    fun slugFor(index: Int): String? = instructorSlugs.getOrNull(index)?.takeIf { it.isNotBlank() }
+
+    /** (name, slug) pairs for every instructor, skipping "TBA"-style placeholders. */
+    val instructorLinks: List<Pair<String, String?>>
+        get() = instructors.mapIndexedNotNull { index, name ->
+            if (name.isBlank() || name.contains("TBA", ignoreCase = true)) null
+            else name to slugFor(index)
+        }
 
     val hasWaitlist: Boolean
         get() = waitlist > 0
@@ -178,14 +191,34 @@ data class Location(
         get() = if (room != null) "$building $room" else building
 }
 
+/**
+ * A professor as Jupiterp identifies them. [slug] is Jupiterp's own id and
+ * the jupiterp.com/professor/{slug} URL segment.
+ *
+ * The displayed rating is [combinedRating]: PlanetTerp's frozen snapshot
+ * blended with approved Jupiterp reviews, both decayed with age and shrunk
+ * toward the site-wide mean. It's null below the server's display floor.
+ */
 @Serializable
 data class Instructor(
     val name: String,
     val slug: String,
-    val averageRating: Float?
+    val averageRating: Float?,
+    val combinedRating: Float? = null,
+    val ptRating: Float? = null,
+    val ptReviewCount: Int? = null,
+    val jupiterpRating: Float? = null,
+    val jupiterpReviewCount: Int = 0,
+    val firstSeenTerm: Int? = null,
+    val lastSeenTerm: Int? = null,
+    val isActive: Boolean = false
 ) {
+    /** The number to show: the blend, falling back to the v0-compatible field. */
+    val rating: Float?
+        get() = combinedRating ?: averageRating
+
     val ratingDisplay: String?
-        get() = averageRating?.toOneDecimalString()
+        get() = rating?.toOneDecimalString()
 }
 
 @Serializable

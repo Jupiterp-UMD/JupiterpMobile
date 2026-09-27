@@ -1,8 +1,10 @@
 package com.jupiterp.jupiterpmobile
 
+import com.jupiterp.jupiterpmobile.domain.model.CivilDate
 import com.jupiterp.jupiterpmobile.domain.model.ClassMeeting
 import com.jupiterp.jupiterpmobile.domain.model.DayOfWeek
 import com.jupiterp.jupiterpmobile.domain.model.ScheduleSelection
+import com.jupiterp.jupiterpmobile.domain.model.ServedTerm
 import kotlin.math.roundToInt
 
 fun Float.toOneDecimalString(): String {
@@ -70,8 +72,10 @@ internal fun generateIcsContent(
             }
             if (days.isEmpty()) continue
             val byDay = days.joinToString(",") { it.toIcsDayCode() }
-            val firstDay = days.minByOrNull { it.column } ?: continue
-            val dtStart = icsDateForDay(firstDay, semester.firstMondayInt)
+            // The first meeting on or after the first day of classes. When
+            // classes start midweek, an early-week day's first occurrence is
+            // the following week, so take the earliest date, not the earliest day.
+            val dtStart = days.minOf { icsDateForDay(it, semester.firstClassDayInt) }
             sb.append("BEGIN:VEVENT\r\n")
             sb.append("DTSTART:${dtStart}T${formatIcsTime(startTime)}00\r\n")
             sb.append("DTEND:${dtStart}T${formatIcsTime(endTime)}00\r\n")
@@ -85,57 +89,58 @@ internal fun generateIcsContent(
     return sb.toString()
 }
 
-// Jan–Mar  → Spring of this year
-// Apr–Oct  → Fall of this year
-// Nov–Dec  → Spring of next year
-// To add a future semester, add its year to the relevant map.
-internal data class SemesterDates(val firstMondayInt: Int, val endIcs: String)
+/**
+ * Class dates for one term. [firstClassDayInt] is the first day of classes
+ * (YYYYMMDD), which need not be a Monday — Spring 2027 starts on a Wednesday.
+ */
+internal data class SemesterDates(val firstClassDayInt: Int, val endIcs: String)
 
-private val FALL = mapOf(
-    2025 to SemesterDates(20250825, "20251217T235959Z"),
-    2026 to SemesterDates(20260831, "20261211T235959Z"),
-    2027 to SemesterDates(20270830, "20271217T235959Z"),
-)
-
-private val SPRING = mapOf(
-    2026 to SemesterDates(20260126, "20260520T235959Z"),
-    2027 to SemesterDates(20270125, "20270519T235959Z"),
-    2028 to SemesterDates(20280124, "20280517T235959Z"),
+// Keyed by term code (see Terms). To add a future semester, add a row.
+// Spring 2027 matches the site's term constants (classes Jan 27 – May 11);
+// its UNTIL is end-of-day Eastern so a last-day evening class isn't dropped.
+private val SEMESTERS = mapOf(
+    202508 to SemesterDates(20250825, "20251217T235959Z"),
+    202601 to SemesterDates(20260126, "20260520T235959Z"),
+    202608 to SemesterDates(20260831, "20261211T235959Z"),
+    202701 to SemesterDates(20270127, "20270512T035959Z"),
+    202708 to SemesterDates(20270830, "20271217T235959Z"),
+    202801 to SemesterDates(20280124, "20280517T235959Z"),
 )
 
 /**
- * Returns null when the active semester's dates aren't in the tables above —
- * falling back to another semester would silently export wrong dates.
+ * The dates for the term the planner is showing. Prefers the term the API
+ * reports it's serving ([ServedTerm]); without that, guesses from the date:
+ * Jan–Mar → Spring of this year, Apr–Oct → Fall, Nov–Dec → next Spring.
+ *
+ * Returns null when that term's dates aren't in the table above — falling
+ * back to another semester would silently export wrong dates.
  */
-internal fun activeSemester(today: Int = currentDateInt()): SemesterDates? {
+internal fun activeSemester(
+    today: Int = currentDateInt(),
+    servedTerm: Int? = ServedTerm.code
+): SemesterDates? {
+    if (servedTerm != null) return SEMESTERS[servedTerm]
     val year = today / 10000
     val month = (today / 100) % 100
-    return when {
-        month < 4  -> SPRING[year]
-        month < 11 -> FALL[year]
-        else       -> SPRING[year + 1]
+    val term = when {
+        month < 4 -> year * 100 + 1
+        month < 11 -> year * 100 + 8
+        else -> (year + 1) * 100 + 1
     }
+    return SEMESTERS[term]
 }
 
 /** True when calendar export has valid dates for the current semester. */
 fun hasKnownSemesterDates(): Boolean = activeSemester() != null
 
 /**
- * Returns the YYYYMMDD string of the first occurrence of [day] at or after [firstMondayInt].
- * firstMondayInt must be a Monday; day.column offsets by 0–6 days.
+ * Returns the YYYYMMDD string of the first occurrence of [day] on or after
+ * [firstClassDayInt].
  */
-internal fun icsDateForDay(day: DayOfWeek, firstMondayInt: Int): String {
-    val year = firstMondayInt / 10000
-    val month = (firstMondayInt / 100) % 100
-    val d = firstMondayInt % 100 + day.column
-    val daysInMonth = daysInMonth(year, month)
-    return if (d <= daysInMonth) {
-        "$year${month.toString().padStart(2, '0')}${d.toString().padStart(2, '0')}"
-    } else {
-        val nextMonth = if (month < 12) month + 1 else 1
-        val nextYear = if (month < 12) year else year + 1
-        "$nextYear${nextMonth.toString().padStart(2, '0')}${(d - daysInMonth).toString().padStart(2, '0')}"
-    }
+internal fun icsDateForDay(day: DayOfWeek, firstClassDayInt: Int): String {
+    val offset = (day.column - CivilDate.weekdayColumn(firstClassDayInt) + 7) % 7
+    val date = CivilDate.fromEpochDay(CivilDate.toEpochDay(firstClassDayInt) + offset)
+    return date.toString()
 }
 
 internal fun daysInMonth(year: Int, month: Int) = when (month) {

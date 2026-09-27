@@ -3,21 +3,28 @@ package com.jupiterp.jupiterpmobile.ui.screens.generator
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jupiterp.jupiterpmobile.data.repository.CourseRepository
+import com.jupiterp.jupiterpmobile.data.repository.GradesRepository
 import com.jupiterp.jupiterpmobile.data.repository.ScheduleRepository
 import com.jupiterp.jupiterpmobile.domain.model.Course
+import com.jupiterp.jupiterpmobile.domain.model.CourseGradesState
 import com.jupiterp.jupiterpmobile.domain.model.DayOfWeek
 import com.jupiterp.jupiterpmobile.domain.model.Section
+import com.jupiterp.jupiterpmobile.domain.model.expectedSectionGpa
 import com.jupiterp.jupiterpmobile.domain.scheduler.CourseRequest
 import com.jupiterp.jupiterpmobile.domain.scheduler.GeneratedSchedule
 import com.jupiterp.jupiterpmobile.domain.scheduler.HardConstraints
 import com.jupiterp.jupiterpmobile.domain.scheduler.PinNotice
 import com.jupiterp.jupiterpmobile.domain.scheduler.Relaxation
 import com.jupiterp.jupiterpmobile.domain.scheduler.ScheduleGenerator
+import com.jupiterp.jupiterpmobile.domain.scheduler.SectionKey
 import com.jupiterp.jupiterpmobile.domain.scheduler.SectionPin
 import com.jupiterp.jupiterpmobile.domain.scheduler.SortCriterion
 import com.jupiterp.jupiterpmobile.domain.scheduler.singleRelaxations
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -28,6 +35,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * ViewModel for the schedule generator: holds the requirement list and
@@ -36,7 +44,8 @@ import kotlinx.coroutines.withContext
  */
 class GeneratorViewModel(
     private val courseRepository: CourseRepository,
-    private val scheduleRepository: ScheduleRepository
+    private val scheduleRepository: ScheduleRepository,
+    private val gradesRepository: GradesRepository
 ) : ViewModel() {
 
     data class RequirementItem(
@@ -70,7 +79,9 @@ class GeneratorViewModel(
             /** Per-instructor average ratings, keyed by name, for detail display. */
             val instructorRatings: Map<String, Float>,
             /** Pinned sections kept despite violating a filter; shown as a heads-up. */
-            val pinNotices: List<PinNotice> = emptyList()
+            val pinNotices: List<PinNotice> = emptyList(),
+            /** Expected GPA per section from grade history, for detail display. */
+            val sectionGpas: Map<SectionKey, Float> = emptyMap()
         ) : GenerationState
 
         data class NoSchedules(
@@ -296,13 +307,13 @@ class GeneratorViewModel(
                 byCode[item.courseCode]?.let { course -> item.toRequest(course) }
             }
 
-            val instructorNames = requests
-                .flatMap { it.course.sections.orEmpty() }
-                .flatMap { it.instructors }
-            val ratings = courseRepository.getInstructorRatings(instructorNames)
+            val ratings = courseRepository.getInstructorRatings(
+                requests.flatMap { it.course.sections.orEmpty() }
+            )
+            val sectionGpas = loadSectionGpas(requests.map { it.course })
 
             val result = withContext(Dispatchers.Default) {
-                ScheduleGenerator.generate(requests, constraints, ratings)
+                ScheduleGenerator.generate(requests, constraints, ratings, sectionGpas = sectionGpas)
             }
 
             if (result.schedules.isNotEmpty()) {
@@ -311,7 +322,7 @@ class GeneratorViewModel(
                     _sortCriterion.value = SortCriterion.MOST_CLASSES
                 }
                 _generationState.value = GenerationState.Done(
-                    result.schedules, result.truncated, ratings, result.pinNotices
+                    result.schedules, result.truncated, ratings, result.pinNotices, sectionGpas
                 )
                 return@launch
             }
@@ -323,7 +334,7 @@ class GeneratorViewModel(
             val hints = withContext(Dispatchers.Default) {
                 singleRelaxations(constraints).mapNotNull { relaxation ->
                     val rerun = ScheduleGenerator.generate(
-                        requests, relaxation.constraints, ratings, maxResults = 50
+                        requests, relaxation.constraints, ratings, maxResults = 50, sectionGpas = sectionGpas
                     )
                     if (rerun.schedules.isEmpty()) null
                     else RelaxationHint(relaxation, rerun.schedules.size, rerun.truncated)
@@ -358,4 +369,31 @@ class GeneratorViewModel(
     fun saveSchedule(schedule: GeneratedSchedule, name: String) {
         scheduleRepository.saveSchedule(name, schedule.selections)
     }
+
+    /**
+     * Expected GPA for every section of [courses], from each course's grade
+     * history. Grade data is a nice-to-have for ranking, so it gets a short
+     * budget: past it, generation goes ahead and schedules show no GPA.
+     */
+    private suspend fun loadSectionGpas(courses: List<Course>): Map<SectionKey, Float> {
+        withTimeoutOrNull(GRADES_BUDGET_MS) {
+            coroutineScope {
+                courses.map { course ->
+                    async { gradesRepository.ensureCourseGrades(course.courseCode, retryError = true) }
+                }.awaitAll()
+            }
+        }
+        val grades = gradesRepository.courseGrades.value
+        return courses.flatMap { course ->
+            val courseGrades = (grades[course.courseCode] as? CourseGradesState.Loaded)?.grades
+            course.sections.orEmpty().mapNotNull { section ->
+                expectedSectionGpa(section, courseGrades)?.let { SectionKey(course.courseCode, section.sectionCode) to it }
+            }
+        }.toMap()
+    }
+
+    private companion object {
+        const val GRADES_BUDGET_MS = 8_000L
+    }
+
 }

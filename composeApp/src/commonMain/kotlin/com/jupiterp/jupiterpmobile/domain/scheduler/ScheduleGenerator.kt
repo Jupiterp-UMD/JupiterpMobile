@@ -45,19 +45,23 @@ object ScheduleGenerator {
         courses: List<Course>,
         constraints: HardConstraints,
         instructorRatings: Map<String, Float> = emptyMap(),
-        maxResults: Int = DEFAULT_MAX_RESULTS
+        maxResults: Int = DEFAULT_MAX_RESULTS,
+        sectionGpas: Map<SectionKey, Float> = emptyMap()
     ): GenerationResult = generate(
         requests = courses.map { CourseRequest(it) },
         constraints = constraints,
         instructorRatings = instructorRatings,
-        maxResults = maxResults
+        maxResults = maxResults,
+        sectionGpas = sectionGpas
     )
 
     fun generate(
         requests: List<CourseRequest>,
         constraints: HardConstraints,
         instructorRatings: Map<String, Float> = emptyMap(),
-        maxResults: Int = DEFAULT_MAX_RESULTS
+        maxResults: Int = DEFAULT_MAX_RESULTS,
+        /** Expected GPA per section, from grade history; see expectedSectionGpa. */
+        sectionGpas: Map<SectionKey, Float> = emptyMap()
     ): GenerationResult {
         val pinNotices = mutableListOf<PinNotice>()
 
@@ -160,7 +164,7 @@ object ScheduleGenerator {
                 .mapIndexed { i, candidate ->
                     ScheduleSelection(candidate.course, candidate.section, colorIndex = i)
                 }
-            GeneratedSchedule(selections, computeMetrics(combo, instructorRatings))
+            GeneratedSchedule(selections, computeMetrics(combo, instructorRatings, sectionGpas))
         }
         return GenerationResult(schedules, truncated, emptyList(), pinNotices.distinct())
     }
@@ -217,7 +221,8 @@ object ScheduleGenerator {
 
     private fun computeMetrics(
         combo: List<Candidate>,
-        ratings: Map<String, Float>
+        ratings: Map<String, Float>,
+        sectionGpas: Map<SectionKey, Float>
     ): ScheduleMetrics {
         val slots = combo.flatMap { it.slots }
         val slotsByDay = slots.groupBy { it.day }
@@ -245,6 +250,14 @@ object ScheduleGenerator {
             if (rated.isEmpty()) null else rated.sum() / rated.size
         }
 
+        // Credit-weighted, like a transcript GPA; a zero-credit section still
+        // counts once so it isn't silently dropped
+        val weightedGpas = combo.mapNotNull { candidate ->
+            sectionGpas[SectionKey(candidate.course.courseCode, candidate.section.sectionCode)]
+                ?.let { gpa -> gpa to candidate.course.minCredits.coerceAtLeast(1) }
+        }
+        val gpaWeight = weightedGpas.sumOf { it.second }
+
         return ScheduleMetrics(
             avgInstructorRating = if (sectionRatings.isEmpty()) null else sectionRatings.sum() / sectionRatings.size,
             ratedSectionCount = sectionRatings.size,
@@ -255,7 +268,9 @@ object ScheduleGenerator {
             totalGapMinutes = totalGapMinutes,
             earliestStartMinutes = slots.minOfOrNull { it.start },
             latestEndMinutes = slots.maxOfOrNull { it.end },
-            minOpenSeats = combo.minOf { it.section.openSeats }
+            minOpenSeats = combo.minOf { it.section.openSeats },
+            avgGpa = if (gpaWeight == 0) null else weightedGpas.sumOf { (gpa, w) -> gpa.toDouble() * w }.toFloat() / gpaWeight,
+            gpaSectionCount = weightedGpas.size
         )
     }
 }

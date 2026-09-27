@@ -26,7 +26,12 @@ import platform.Foundation.NSDate
 import platform.Foundation.NSDateComponents
 import platform.Foundation.NSDateFormatter
 import platform.Foundation.NSOperationQueue
+import kotlinx.cinterop.useContents
+import platform.CoreGraphics.CGRectMake
+import platform.UIKit.UIActivityViewController
+import platform.UIKit.UIApplication
 import platform.UIKit.UIDevice
+import platform.UIKit.popoverPresentationController
 import kotlin.math.roundToInt
 
 class IOSPlatform: Platform {
@@ -85,7 +90,9 @@ actual fun addToCalendar(selections: List<ScheduleSelection>, onResult: (Boolean
                     }
                     if (days.isEmpty()) continue
 
-                    val firstDay = days.minByOrNull { it.column } ?: continue
+                    // First meeting on or after the first day of classes,
+                    // which may be midweek (Spring 2027 starts on a Wednesday)
+                    val firstDate = days.minOf { icsDateForDay(it, semester.firstClassDayInt) }.toInt()
                     val ekDays = days.map { EKRecurrenceDayOfWeek.dayOfWeek(it.toEKWeekday()) }
                     val rule = EKRecurrenceRule(
                         recurrenceWithFrequency = EKRecurrenceFrequency.EKRecurrenceFrequencyWeekly,
@@ -104,8 +111,8 @@ actual fun addToCalendar(selections: List<ScheduleSelection>, onResult: (Boolean
                     event.notes = courseName
                     event.location = location
                     event.calendar = defaultCalendar
-                    event.startDate = makeEventDate(semester.firstMondayInt, firstDay, startTime)
-                    event.endDate = makeEventDate(semester.firstMondayInt, firstDay, endTime)
+                    event.startDate = makeEventDate(firstDate, startTime)
+                    event.endDate = makeEventDate(firstDate, endTime)
                     event.addRecurrenceRule(rule)
 
                     val saved = runCatching {
@@ -121,22 +128,11 @@ actual fun addToCalendar(selections: List<ScheduleSelection>, onResult: (Boolean
     }
 }
 
-private fun makeEventDate(firstMondayInt: Int, day: DayOfWeek, time: Float): NSDate {
-    val year = firstMondayInt / 10000
-    val month = (firstMondayInt / 100) % 100
-    val dayOfMonthRaw = firstMondayInt % 100 + day.column
-    val monthDays = daysInMonth(year, month)
-    val (finalYear, finalMonth, finalDay) = if (dayOfMonthRaw <= monthDays) {
-        Triple(year, month, dayOfMonthRaw)
-    } else {
-        val nm = if (month < 12) month + 1 else 1
-        val ny = if (month < 12) year else year + 1
-        Triple(ny, nm, dayOfMonthRaw - monthDays)
-    }
+private fun makeEventDate(dateInt: Int, time: Float): NSDate {
     val components = NSDateComponents()
-    components.year = finalYear.toLong()
-    components.month = finalMonth.toLong()
-    components.day = finalDay.toLong()
+    components.year = (dateInt / 10000).toLong()
+    components.month = ((dateInt / 100) % 100).toLong()
+    components.day = (dateInt % 100).toLong()
     // Round to whole minutes to absorb float precision error in times like X:20
     val totalMinutes = (time * 60).roundToInt()
     components.hour = (totalMinutes / 60).toLong()
@@ -159,4 +155,25 @@ private fun DayOfWeek.toEKWeekday() = when (this) {
     DayOfWeek.SATURDAY -> EKWeekdaySaturday
     DayOfWeek.SUNDAY -> EKWeekdaySunday
     else -> EKWeekdayMonday
+}
+
+actual fun shareText(text: String, subject: String?): Boolean {
+    @Suppress("DEPRECATION")
+    val root = UIApplication.sharedApplication.keyWindow?.rootViewController ?: return false
+    // Present over whatever is already showing (a sheet, a dialog)
+    var top = root
+    while (true) {
+        top = top.presentedViewController ?: break
+    }
+    val controller = UIActivityViewController(activityItems = listOf(text), applicationActivities = null)
+    // iPad shows the sheet as a popover, which needs an anchor or it crashes
+    controller.popoverPresentationController?.let { popover ->
+        val view = top.view
+        popover.sourceView = view
+        view.bounds.useContents {
+            popover.sourceRect = CGRectMake(size.width / 2, size.height / 2, 0.0, 0.0)
+        }
+    }
+    top.presentViewController(controller, animated = true, completion = null)
+    return true
 }

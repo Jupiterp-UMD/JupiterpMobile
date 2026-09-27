@@ -8,17 +8,22 @@ import com.jupiterp.jupiterpmobile.data.model.toDomain
 import com.jupiterp.jupiterpmobile.domain.model.Course
 import com.jupiterp.jupiterpmobile.domain.model.Department
 import com.jupiterp.jupiterpmobile.domain.model.Instructor
+import com.jupiterp.jupiterpmobile.domain.model.Section
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
 /**
  * Repository for course-related data operations
- * Uses the Jupiterp API v0
+ * Uses the Jupiterp API v1
  */
 class CourseRepository(
     private val apiClient: JupiterpApiClient
 ) {
+    private companion object {
+        const val SUGGESTION_COLUMNS = "slug,name,average_rating,combined_rating"
+    }
+
     /**
      * Search courses with filters and include section data
      *
@@ -95,6 +100,8 @@ class CourseRepository(
     /**
      * Fetch active instructors for autocomplete. The API caps each request at 500 and
      * returns ~2.6k entries unsorted, so we pull pages in parallel and sort client-side.
+     * Only the columns autocomplete and ratings read are requested; the full v1
+     * row is ~20 columns, most of it provenance the app never shows.
      */
     suspend fun getAllInstructorsForSuggestions(): Result<List<Instructor>> = runCatching {
         coroutineScope {
@@ -103,16 +110,36 @@ class CourseRepository(
             (0 until maxPages).map { idx ->
                 async {
                     apiClient.getActiveInstructors(
-                        InstructorSearchParams(limit = pageSize, offset = idx * pageSize)
+                        InstructorSearchParams(
+                            columns = SUGGESTION_COLUMNS,
+                            limit = pageSize,
+                            offset = idx * pageSize
+                        )
                     ).getOrNull().orEmpty()
                 }
             }.awaitAll()
                 .flatten()
-                .distinctBy { it.name }
+                .distinctBy { it.slug }
                 .map { it.toDomain() }
                 .sortedBy { it.name }
         }
     }
+
+    /**
+     * The term whose sections the API is serving, e.g. 202701. The scraper
+     * stamps `last_seen_term` on every instructor it sees, so the newest one
+     * among active instructors is the current scrape.
+     */
+    suspend fun getServedTerm(): Int? =
+        apiClient.getInstructors(
+            InstructorSearchParams(
+                activeOnly = true,
+                // slug and name too: InstructorResponse requires them to decode
+                columns = "slug,name,last_seen_term",
+                sortBy = "last_seen_term.desc",
+                limit = 1
+            )
+        ).getOrNull()?.firstOrNull()?.lastSeenTerm
 
     /**
      * Get all active instructors (teaching this semester)
@@ -156,12 +183,66 @@ class CourseRepository(
     }
 
     /**
+     * Instructor records for the given slugs, chunked to keep the query
+     * string a sane length. Failed chunks are skipped: ratings are optional
+     * metadata and one bad page shouldn't blank the rest.
+     */
+    suspend fun getInstructorsBySlugs(slugs: Collection<String>): List<Instructor> = coroutineScope {
+        slugs
+            .filter { it.isNotBlank() }
+            .distinct()
+            .chunked(50)
+            .map { chunk ->
+                async {
+                    apiClient.getInstructors(
+                        InstructorSearchParams(
+                            instructorSlugs = chunk,
+                            columns = SUGGESTION_COLUMNS,
+                            limit = chunk.size
+                        )
+                    ).getOrNull().orEmpty()
+                }
+            }
+            .awaitAll()
+            .flatten()
+            .map { it.toDomain() }
+    }
+
+    /**
+     * Best-effort rating lookup for the sections' instructors, keyed by name
+     * (which is what the schedule engine matches on) but resolved by slug:
+     * `instructorSlugs[i]` is the professor the API resolved for slot i, so a
+     * Testudo spelling that differs from the canonical record still gets its
+     * rating, and two professors sharing a name are no longer conflated.
+     * Names with no slug fall back to an exact-name lookup.
+     */
+    suspend fun getInstructorRatings(sections: List<Section>): Map<String, Float> = coroutineScope {
+        val nameToSlug = mutableMapOf<String, String>()
+        val unresolved = mutableSetOf<String>()
+        sections.forEach { section ->
+            section.instructorLinks.forEach { (name, slug) ->
+                if (slug != null) nameToSlug.getOrPut(name) { slug } else unresolved += name
+            }
+        }
+        unresolved.removeAll(nameToSlug.keys)
+
+        val bySlug = async { getInstructorsBySlugs(nameToSlug.values).associateBy { it.slug } }
+        val byName = async { getInstructorRatingsByName(unresolved.toList()) }
+
+        val slugRatings = bySlug.await()
+        val resolved = nameToSlug.mapNotNull { (name, slug) ->
+            slugRatings[slug]?.rating?.let { name to it }
+        }.toMap()
+        byName.await() + resolved
+    }
+
+    /**
      * Best-effort bulk rating lookup keyed by instructor name. Requests are
      * chunked to keep the name-list query parameter a sane length; failed
      * chunks are skipped rather than failing the whole lookup, since ratings
      * are optional metadata.
      */
-    suspend fun getInstructorRatings(names: List<String>): Map<String, Float> = coroutineScope {
+    private suspend fun getInstructorRatingsByName(names: List<String>): Map<String, Float> = coroutineScope {
         names
             .filter { it.isNotBlank() && !it.contains("TBA", ignoreCase = true) }
             .distinct()
@@ -175,7 +256,8 @@ class CourseRepository(
             }
             .awaitAll()
             .flatten()
-            .mapNotNull { response -> response.averageRating?.let { response.name to it } }
+            .map { it.toDomain() }
+            .mapNotNull { instructor -> instructor.rating?.let { instructor.name to it } }
             .toMap()
     }
 

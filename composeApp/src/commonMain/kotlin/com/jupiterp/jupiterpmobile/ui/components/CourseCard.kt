@@ -18,7 +18,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.jupiterp.jupiterpmobile.domain.model.ClassMeeting
 import com.jupiterp.jupiterpmobile.domain.model.Course
+import com.jupiterp.jupiterpmobile.domain.model.CourseGradesState
+import com.jupiterp.jupiterpmobile.domain.model.InstructorDirectory
 import com.jupiterp.jupiterpmobile.domain.model.Section
+import com.jupiterp.jupiterpmobile.domain.model.summarizeCourseInstructors
+import kotlinx.coroutines.delay
 import com.jupiterp.ui.theme.JupiterpTheme
 
 /**
@@ -31,12 +35,21 @@ fun CourseCard(
     onExpandToggle: () -> Unit,
     isSectionSelected: (String) -> Boolean,
     isCourseSelected: Boolean,
-    getInstructorRating: (String) -> Float?,
+    instructorDirectory: InstructorDirectory,
+    gradesState: CourseGradesState?,
+    onRequestGrades: (retryError: Boolean) -> Unit,
     onSectionToggle: (Section) -> Unit,
     onAddCourseWithoutSection: () -> Unit,
     modifier: Modifier = Modifier,
     hasConflict: (Section) -> Boolean = { false }
 ) {
+    // Fetch grades once the card has been on screen briefly; a card scrolled
+    // past quickly leaves composition first and cancels this
+    LaunchedEffect(course.courseCode) {
+        delay(300)
+        onRequestGrades(false)
+    }
+
     val rotationAngle by animateFloatAsState(
         targetValue = if (isExpanded) 180f else 0f,
         animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
@@ -53,6 +66,7 @@ fun CourseCard(
             // Course header (always visible)
             CourseHeader(
                 course = course,
+                gradesState = gradesState,
                 isExpanded = isExpanded,
                 rotationAngle = rotationAngle,
                 onClick = onExpandToggle
@@ -72,7 +86,9 @@ fun CourseCard(
                     course = course,
                     isSectionSelected = isSectionSelected,
                     isCourseSelected = isCourseSelected,
-                    getInstructorRating = getInstructorRating,
+                    instructorDirectory = instructorDirectory,
+                    gradesState = gradesState,
+                    onRetryGrades = { onRequestGrades(true) },
                     onSectionToggle = onSectionToggle,
                     onAddCourseWithoutSection = onAddCourseWithoutSection,
                     hasConflict = hasConflict
@@ -88,6 +104,7 @@ fun CourseCard(
 @Composable
 private fun CourseHeader(
     course: Course,
+    gradesState: CourseGradesState?,
     isExpanded: Boolean,
     rotationAngle: Float,
     onClick: () -> Unit,
@@ -118,6 +135,8 @@ private fun CourseHeader(
                 )
 
                 CreditsBadge(credits = course.credits)
+
+                GpaPill(distribution = (gradesState as? CourseGradesState.Loaded)?.grades?.course)
             }
 
             Text(
@@ -210,7 +229,9 @@ private fun CourseSections(
     course: Course,
     isSectionSelected: (String) -> Boolean,
     isCourseSelected: Boolean,
-    getInstructorRating: (String) -> Float?,
+    instructorDirectory: InstructorDirectory,
+    gradesState: CourseGradesState?,
+    onRetryGrades: () -> Unit,
     onSectionToggle: (Section) -> Unit,
     onAddCourseWithoutSection: () -> Unit,
     modifier: Modifier = Modifier,
@@ -285,6 +306,18 @@ private fun CourseSections(
             }
         }
 
+        CourseGradesBlock(gradesState = gradesState, onRetry = onRetryGrades)
+
+        // Who's teaching this term, to compare professors before picking a section
+        val summaries = remember(course.sections, instructorDirectory, gradesState) {
+            summarizeCourseInstructors(
+                sections = course.sections.orEmpty(),
+                directory = instructorDirectory,
+                grades = (gradesState as? CourseGradesState.Loaded)?.grades
+            )
+        }
+        CourseInstructorStrip(summaries = summaries)
+
         // Divider
         HorizontalDivider(
             color = JupiterpTheme.extendedColors.divider,
@@ -353,7 +386,7 @@ private fun CourseSections(
             course.sections.forEach { section ->
                 val isSelected = isSectionSelected(section.sectionCode)
                 // Co-taught sections: show the first instructor that has a rating
-                val instructorRating = section.instructors.firstNotNullOfOrNull { getInstructorRating(it) }
+                val instructorRating = instructorDirectory.ratingFor(section)
 
                 SectionRow(
                     section = section,
@@ -364,6 +397,56 @@ private fun CourseSections(
                 )
             }
         }
+    }
+}
+
+/**
+ * The course's grade history, or a quiet line explaining its absence. Grade
+ * data is supplementary, so failures are one line with a retry, never a
+ * blocking error.
+ */
+@Composable
+private fun CourseGradesBlock(
+    gradesState: CourseGradesState?,
+    onRetry: () -> Unit
+) {
+    when (gradesState) {
+        is CourseGradesState.Loaded -> GradeSummaryPanel(
+            distribution = gradesState.grades.course,
+            title = "Past grades, all instructors"
+        )
+        CourseGradesState.None -> GradesNote("No grade history yet — new, or not offered in a fall or spring term")
+        CourseGradesState.Error -> Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            GradesNote("Couldn't load grade history", Modifier.weight(1f))
+            TextButton(onClick = onRetry) {
+                Text("Retry", color = JupiterpTheme.extendedColors.orange)
+            }
+        }
+        CourseGradesState.Loading, null -> GradesNote("Loading grade history…")
+    }
+}
+
+@Composable
+private fun GradesNote(text: String, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.BarChart,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = JupiterpTheme.extendedColors.textSecondary
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = JupiterpTheme.extendedColors.textSecondary
+        )
     }
 }
 

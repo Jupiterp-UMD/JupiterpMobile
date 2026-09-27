@@ -34,7 +34,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jupiterp.jupiterpmobile.data.api.ApiState
+import com.jupiterp.jupiterpmobile.data.repository.ProfessorRepository
+import com.jupiterp.jupiterpmobile.data.repository.ReviewRepository
+import com.jupiterp.jupiterpmobile.deeplink.AppLink
+import com.jupiterp.jupiterpmobile.domain.model.CourseGradesState
+import com.jupiterp.jupiterpmobile.domain.model.InstructorDirectory
 import com.jupiterp.jupiterpmobile.domain.model.Course
 import com.jupiterp.jupiterpmobile.domain.model.Department
 import com.jupiterp.jupiterpmobile.domain.model.OtherScheduleItem
@@ -44,15 +50,26 @@ import com.jupiterp.jupiterpmobile.domain.model.Section
 import com.jupiterp.jupiterpmobile.domain.model.StoredSchedule
 import com.jupiterp.jupiterpmobile.ui.components.CompactCourseCard
 import com.jupiterp.jupiterpmobile.ui.components.CourseCard
+import com.jupiterp.jupiterpmobile.ui.components.LocalOpenProfessor
+import com.jupiterp.jupiterpmobile.ui.components.ProfessorRef
 import com.jupiterp.jupiterpmobile.ui.components.OtherClassesSection
 import com.jupiterp.jupiterpmobile.ui.components.SolarSystemLoader
 import com.jupiterp.jupiterpmobile.ui.components.WeeklyScheduleView
+import com.jupiterp.jupiterpmobile.ui.components.ReviewConfig
+import com.jupiterp.jupiterpmobile.ui.screens.professor.ProfessorSheet
+import com.jupiterp.jupiterpmobile.ui.screens.professor.ProfessorViewModel
+import com.jupiterp.jupiterpmobile.ui.screens.professor.ReportReviewDialog
+import com.jupiterp.jupiterpmobile.ui.screens.professor.ReviewComposerSheet
+import com.jupiterp.jupiterpmobile.ui.screens.reviews.MyReviewsSheet
+import com.jupiterp.jupiterpmobile.ui.screens.reviews.MyReviewsViewModel
+import com.jupiterp.jupiterpmobile.ui.screens.reviews.VerifyReviewDialog
 import com.jupiterp.ui.theme.JupiterpTheme
 import jupiterpmobile.composeapp.generated.resources.Res
 import jupiterpmobile.composeapp.generated.resources.logo
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
+import org.koin.compose.koinInject
 
 /**
  * Main screen with responsive layout
@@ -79,6 +96,24 @@ fun MainScreen(
     val snackbarMessage by viewModel.snackbarMessage.collectAsState()
     val instructorSuggestions by viewModel.instructorSuggestions.collectAsState()
     val showSavedSchedulesRequest by viewModel.showSavedSchedulesRequest.collectAsState()
+    val pendingAppLink by viewModel.pendingAppLink.collectAsState()
+    val servedTerm by viewModel.servedTerm.collectAsState()
+
+    // Professor profiles and reviews live in their own view models, scoped to this screen
+    val professorRepository = koinInject<ProfessorRepository>()
+    val reviewRepository = koinInject<ReviewRepository>()
+    val professorViewModel = viewModel { ProfessorViewModel(professorRepository, reviewRepository) }
+    val myReviewsViewModel = viewModel { MyReviewsViewModel(reviewRepository) }
+
+    val profile by professorViewModel.profile.collectAsState()
+    val composer by professorViewModel.composer.collectAsState()
+    val reportState by professorViewModel.report.collectAsState()
+    val verifyState by myReviewsViewModel.verify.collectAsState()
+    val storedReviewKeys by myReviewsViewModel.storedKeys.collectAsState()
+    val reviewEntries by myReviewsViewModel.entries.collectAsState()
+    val addKeyError by myReviewsViewModel.addKeyError.collectAsState()
+    val myReviewsMessage by myReviewsViewModel.message.collectAsState()
+    var showMyReviews by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val searchFocusRequester = remember { FocusRequester() }
@@ -106,6 +141,32 @@ fun MainScreen(
             showSettings = true
             viewModel.consumeSavedSchedulesRequest()
         }
+    }
+
+    // Review and professor links from jupiterp.com emails and shares
+    LaunchedEffect(pendingAppLink) {
+        when (val link = pendingAppLink) {
+            is AppLink.VerifyReview -> myReviewsViewModel.verify(link.token)
+            AppLink.ManageReviews -> showMyReviews = true
+            is AppLink.Professor -> professorViewModel.open(ProfessorRef(name = "", slug = link.slug))
+            null -> return@LaunchedEffect
+        }
+        viewModel.consumeAppLink()
+    }
+
+    LaunchedEffect(showMyReviews) {
+        if (showMyReviews) myReviewsViewModel.refresh()
+    }
+
+    LaunchedEffect(myReviewsMessage) {
+        myReviewsMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            myReviewsViewModel.consumeMessage()
+        }
+    }
+
+    val openProfessor: (ProfessorRef) -> Unit = remember(professorViewModel) {
+        { ref -> professorViewModel.open(ref) }
     }
 
     // Save schedule dialog
@@ -194,10 +255,82 @@ fun MainScreen(
             onExportCalendar = {
                 showSettings = false
                 viewModel.exportSchedule()
+            },
+            onShareSchedule = {
+                showSettings = false
+                viewModel.shareSchedule()
+            },
+            onOpenMyReviews = {
+                showSettings = false
+                showMyReviews = true
             }
         )
     }
 
+    profile?.let { state ->
+        ProfessorSheet(
+            state = state,
+            servedTerm = servedTerm,
+            onDismiss = professorViewModel::close,
+            onRetry = professorViewModel::retry,
+            onWriteReview = professorViewModel::startReview,
+            onLoadMoreReviews = professorViewModel::loadMoreReviews,
+            onReportReview = professorViewModel::startReport,
+            onSearchCourse = { code ->
+                professorViewModel.close()
+                viewModel.searchForCourse(code)
+            }
+        )
+    }
+
+    composer?.let { state ->
+        ReviewComposerSheet(
+            state = state,
+            darkTheme = isDarkMode,
+            onUpdate = professorViewModel::updateDraft,
+            onCaptchaToken = professorViewModel::onCaptchaToken,
+            onSubmit = { professorViewModel.submitReview(ReviewConfig.captchaRequired) },
+            onDismiss = professorViewModel::closeComposer
+        )
+    }
+
+    reportState?.let { state ->
+        ReportReviewDialog(
+            state = state,
+            onSubmit = professorViewModel::submitReport,
+            onDismiss = professorViewModel::dismissReport
+        )
+    }
+
+    if (showMyReviews) {
+        MyReviewsSheet(
+            storedKeys = storedReviewKeys,
+            entries = reviewEntries,
+            addKeyError = addKeyError,
+            onAddKey = myReviewsViewModel::addKey,
+            onClearAddKeyError = myReviewsViewModel::clearAddKeyError,
+            onWithdraw = myReviewsViewModel::withdraw,
+            onForget = myReviewsViewModel::forget,
+            onOpenProfessor = { ref ->
+                showMyReviews = false
+                openProfessor(ref)
+            },
+            onDismiss = { showMyReviews = false }
+        )
+    }
+
+    verifyState?.let { state ->
+        VerifyReviewDialog(
+            state = state,
+            onDismiss = myReviewsViewModel::dismissVerify,
+            onOpenMyReviews = {
+                myReviewsViewModel.dismissVerify()
+                showMyReviews = true
+            }
+        )
+    }
+
+    CompositionLocalProvider(LocalOpenProfessor provides openProfessor) {
     Scaffold(
         modifier = modifier,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -254,6 +387,7 @@ fun MainScreen(
             }
         }
     }
+    }
 }
 
 /**
@@ -275,10 +409,12 @@ private fun PhoneLayout(
     onToggleCoursesExpanded: () -> Unit,
     onSettingsClick: () -> Unit,
     onGenerateClick: () -> Unit,
-    instructorSuggestions: List<String> = emptyList(),
+    instructorSuggestions: List<com.jupiterp.jupiterpmobile.domain.model.Instructor> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
+    val instructorDirectory by viewModel.instructorDirectory.collectAsState()
+    val courseGrades by viewModel.courseGrades.collectAsState()
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
 
@@ -503,7 +639,9 @@ private fun PhoneLayout(
                                     isCourseSelected = { code ->
                                         currentSelections.any { it.course.courseCode == code }
                                     },
-                                    getInstructorRating = { viewModel.getInstructorRating(it) },
+                                    instructorDirectory = instructorDirectory,
+                                    courseGrades = courseGrades,
+                                    onRequestGrades = viewModel::loadCourseGrades,
                                     onSectionToggle = { course, section ->
                                         val isSelected = currentSelections.any {
                                             it.course.courseCode == course.courseCode &&
@@ -583,9 +721,11 @@ private fun TabletLayout(
     onToggleCoursesExpanded: () -> Unit,
     onSettingsClick: () -> Unit,
     onGenerateClick: () -> Unit,
-    instructorSuggestions: List<String> = emptyList(),
+    instructorSuggestions: List<com.jupiterp.jupiterpmobile.domain.model.Instructor> = emptyList(),
     modifier: Modifier = Modifier
 ) {
+    val instructorDirectory by viewModel.instructorDirectory.collectAsState()
+    val courseGrades by viewModel.courseGrades.collectAsState()
     val scheduleBlocks by viewModel.scheduleBlocks.collectAsState()
     val otherItems by viewModel.otherItems.collectAsState()
     val totalCredits by viewModel.totalCredits.collectAsState()
@@ -662,7 +802,9 @@ private fun TabletLayout(
                         isCourseSelected = { code ->
                             currentSelections.any { it.course.courseCode == code }
                         },
-                        getInstructorRating = { viewModel.getInstructorRating(it) },
+                        instructorDirectory = instructorDirectory,
+                        courseGrades = courseGrades,
+                        onRequestGrades = viewModel::loadCourseGrades,
                         onSectionToggle = { course, section ->
                             val isSelected = currentSelections.any {
                                 it.course.courseCode == course.courseCode &&
@@ -700,7 +842,9 @@ private fun SearchResultsContent(
     onExpandToggle: (String) -> Unit,
     isSectionSelected: (String, String) -> Boolean,
     isCourseSelected: (String) -> Boolean,
-    getInstructorRating: (String) -> Float?,
+    instructorDirectory: InstructorDirectory,
+    courseGrades: Map<String, CourseGradesState>,
+    onRequestGrades: (String, Boolean) -> Unit,
     onSectionToggle: (Course, Section) -> Unit,
     onAddCourseWithoutSection: (Course) -> Unit,
     hasActiveSearch: Boolean = false,
@@ -743,7 +887,9 @@ private fun SearchResultsContent(
                             onExpandToggle = { onExpandToggle(course.courseCode) },
                             isSectionSelected = { isSectionSelected(course.courseCode, it) },
                             isCourseSelected = isCourseSelected(course.courseCode),
-                            getInstructorRating = getInstructorRating,
+                            instructorDirectory = instructorDirectory,
+                            gradesState = courseGrades[course.courseCode],
+                            onRequestGrades = { retry -> onRequestGrades(course.courseCode, retry) },
                             onSectionToggle = { onSectionToggle(course, it) },
                             onAddCourseWithoutSection = { onAddCourseWithoutSection(course) },
                             hasConflict = { hasConflict(course.courseCode, it) }
@@ -837,30 +983,24 @@ private fun CompactHeader(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (selectedCount > 0) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = JupiterpTheme.extendedColors.orangeContainer
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "$selectedCount courses",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = JupiterpTheme.extendedColors.orange
-                            )
-                            Text("•", color = JupiterpTheme.extendedColors.orange.copy(alpha = 0.5f))
-                            Text(
-                                if (totalCredits.first == totalCredits.last) "${totalCredits.first} cr"
-                                else "${totalCredits.first}-${totalCredits.last} cr",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = JupiterpTheme.extendedColors.orange
-                            )
-                        }
+                        Text(
+                            if (selectedCount == 1) "1 course" else "$selectedCount courses",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = JupiterpTheme.extendedColors.orange
+                        )
+                        Text("•", color = JupiterpTheme.extendedColors.orange.copy(alpha = 0.5f))
+                        Text(
+                            if (totalCredits.first == totalCredits.last) "${totalCredits.first} cr"
+                            else "${totalCredits.first}-${totalCredits.last} cr",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = JupiterpTheme.extendedColors.orange
+                        )
                     }
                 }
 
@@ -1142,7 +1282,9 @@ private fun SettingsBottomSheet(
     onRenameSchedule: (String) -> Unit,
     onDismiss: () -> Unit,
     onClearSchedule: () -> Unit,
-    onExportCalendar: () -> Unit = {}
+    onExportCalendar: () -> Unit = {},
+    onShareSchedule: () -> Unit = {},
+    onOpenMyReviews: () -> Unit = {}
 ) {
     val uriHandler = LocalUriHandler.current
     var showDeleteConfirm by remember { mutableStateOf<String?>(null) }
@@ -1335,6 +1477,52 @@ private fun SettingsBottomSheet(
                 }
             }
 
+            // Share as a jupiterp.com link
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = hasCurrentSchedule, onClick = onShareSchedule),
+                shape = RoundedCornerShape(12.dp),
+                color = if (hasCurrentSchedule)
+                    JupiterpTheme.extendedColors.orangeContainer.copy(alpha = 0.5f)
+                else
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Outlined.Share,
+                        null,
+                        tint = if (hasCurrentSchedule)
+                            JupiterpTheme.extendedColors.orange
+                        else
+                            JupiterpTheme.extendedColors.textSecondary.copy(alpha = 0.5f)
+                    )
+                    Column {
+                        Text(
+                            "Share Schedule",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium,
+                            color = if (hasCurrentSchedule)
+                                MaterialTheme.colorScheme.onSurface
+                            else
+                                JupiterpTheme.extendedColors.textSecondary.copy(alpha = 0.5f)
+                        )
+                        Text(
+                            if (hasCurrentSchedule) "Send a link that opens on jupiterp.com or in the app"
+                            else "No courses selected",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = JupiterpTheme.extendedColors.textSecondary.copy(
+                                alpha = if (hasCurrentSchedule) 1f else 0.5f
+                            )
+                        )
+                    }
+                }
+            }
+
             // Saved schedules list
             if (savedSchedules.isNotEmpty()) {
                 Surface(
@@ -1424,6 +1612,31 @@ private fun SettingsBottomSheet(
                             "No saved schedules yet",
                             style = MaterialTheme.typography.bodyMedium,
                             color = JupiterpTheme.extendedColors.textSecondary.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+
+            // Reviews written from this device
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenMyReviews),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Outlined.RateReview, null, tint = JupiterpTheme.extendedColors.orange)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("My Reviews", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                        Text(
+                            "Check on or withdraw reviews you've written",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = JupiterpTheme.extendedColors.textSecondary
                         )
                     }
                 }

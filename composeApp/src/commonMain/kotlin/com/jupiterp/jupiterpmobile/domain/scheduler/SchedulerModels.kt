@@ -71,8 +71,18 @@ data class ScheduleMetrics(
     val totalGapMinutes: Int,
     val earliestStartMinutes: Int?,
     val latestEndMinutes: Int?,
-    val minOpenSeats: Int
+    val minOpenSeats: Int,
+    /**
+     * Expected GPA from past grades, weighted by credits the way a semester
+     * GPA is; sections without grade data are left out rather than counted
+     * as zero, with [gpaSectionCount] exposing the coverage.
+     */
+    val avgGpa: Float? = null,
+    val gpaSectionCount: Int = 0
 )
+
+/** Identifies a section across courses (section codes repeat between courses). */
+data class SectionKey(val courseCode: String, val sectionCode: String)
 
 data class GeneratedSchedule(
     val selections: List<ScheduleSelection>,

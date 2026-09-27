@@ -4,8 +4,12 @@ import com.jupiterp.jupiterpmobile.domain.model.ClassMeeting
 import com.jupiterp.jupiterpmobile.domain.model.Classtime
 import com.jupiterp.jupiterpmobile.domain.model.Course
 import com.jupiterp.jupiterpmobile.domain.model.Department
+import com.jupiterp.jupiterpmobile.domain.model.GradeDistribution
 import com.jupiterp.jupiterpmobile.domain.model.Instructor
 import com.jupiterp.jupiterpmobile.domain.model.Location
+import com.jupiterp.jupiterpmobile.domain.model.ManagedReview
+import com.jupiterp.jupiterpmobile.domain.model.Review
+import com.jupiterp.jupiterpmobile.domain.model.ReviewStatus
 import com.jupiterp.jupiterpmobile.domain.model.Section
 import com.jupiterp.jupiterpmobile.domain.model.formatTwelveHourTime
 
@@ -38,7 +42,8 @@ fun SectionResponse.toDomain(): Section = Section(
     openSeats = openSeats,
     totalSeats = totalSeats,
     waitlist = waitlist,
-    holdfile = holdfile
+    holdfile = holdfile,
+    instructorSlugs = instructors.indices.map { instructorSlugs.getOrNull(it).orEmpty() }
 )
 
 /**
@@ -143,10 +148,61 @@ fun formatTimeFromFloat(time: Float): String =
 fun InstructorResponse.toDomain(): Instructor = Instructor(
     name = name,
     slug = slug,
-    averageRating = averageRating
+    averageRating = averageRating,
+    combinedRating = combinedRating,
+    ptRating = ptAverageRating,
+    ptReviewCount = ptReviewCount,
+    jupiterpRating = jupiterpRating,
+    jupiterpReviewCount = jupiterpReviewCount,
+    firstSeenTerm = firstSeenTerm,
+    lastSeenTerm = lastSeenTerm,
+    isActive = isActive
 )
 
 fun DepartmentResponse.toDomain(): Department = Department(
     code = deptCode,
     name = name
+)
+fun GradeSummaryResponse.toDistribution(): GradeDistribution = GradeDistribution(
+    letters = linkedMapOf(
+        "A+" to aPlus, "A" to a, "A-" to aMinus,
+        "B+" to bPlus, "B" to b, "B-" to bMinus,
+        "C+" to cPlus, "C" to c, "C-" to cMinus,
+        "D+" to dPlus, "D" to d, "D-" to dMinus,
+        "F" to f, "W" to w, "Other" to other
+    ),
+    graded = graded,
+    total = total,
+    gpa = gpa,
+    // A per-term row has no range; it covers exactly its own term
+    firstTerm = firstTerm ?: term,
+    lastTerm = lastTerm ?: term,
+    sectionCount = sectionCount,
+    termCount = termCount
+)
+
+fun ReviewResponse.toDomain(): Review = Review(
+    id = id,
+    courseCode = courseCode,
+    term = term,
+    rating = rating,
+    expectedGrade = expectedGrade,
+    title = title?.takeIf { it.isNotBlank() },
+    body = body?.takeIf { it.isNotBlank() },
+    submittedAt = submittedAt,
+    edited = editedAt != null
+)
+
+fun ManagedReviewResponse.toDomain(): ManagedReview = ManagedReview(
+    id = id,
+    instructorName = instructor,
+    instructorSlug = instructorSlug,
+    courseCode = courseCode,
+    term = term,
+    rating = rating,
+    title = title,
+    body = body,
+    status = ReviewStatus.fromApi(status),
+    submittedAt = submittedAt,
+    withdrawable = withdrawable
 )

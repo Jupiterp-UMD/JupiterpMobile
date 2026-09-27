@@ -1,5 +1,6 @@
 package com.jupiterp.jupiterpmobile.data.storage
 import com.jupiterp.jupiterpmobile.domain.model.ScheduleSelection
+import com.jupiterp.jupiterpmobile.domain.model.StoredReviewKey
 import com.jupiterp.jupiterpmobile.domain.model.StoredSchedule
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,7 +18,9 @@ data class AppData(
     val isDarkMode: Boolean? = null, // null = follow system
     val currentSchedule: List<ScheduleSelection> = emptyList(),
     val savedSchedules: List<StoredSchedule> = emptyList(),
-    val colorCounter: Int = 0
+    val colorCounter: Int = 0,
+    // Manage keys for reviews written on this device, newest first
+    val reviewKeys: List<StoredReviewKey> = emptyList()
 )
 
 /**

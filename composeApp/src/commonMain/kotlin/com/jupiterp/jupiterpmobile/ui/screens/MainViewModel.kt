@@ -5,16 +5,25 @@ import androidx.lifecycle.viewModelScope
 import com.jupiterp.jupiterpmobile.data.api.ApiState
 import com.jupiterp.jupiterpmobile.data.repository.AddSectionResult
 import com.jupiterp.jupiterpmobile.data.repository.CourseRepository
+import com.jupiterp.jupiterpmobile.data.repository.GradesRepository
 import com.jupiterp.jupiterpmobile.data.repository.ScheduleRepository
 import com.jupiterp.jupiterpmobile.domain.model.Course
+import com.jupiterp.jupiterpmobile.domain.model.CourseGradesState
 import com.jupiterp.jupiterpmobile.domain.model.Department
 import com.jupiterp.jupiterpmobile.domain.model.Instructor
+import com.jupiterp.jupiterpmobile.domain.model.InstructorDirectory
 import com.jupiterp.jupiterpmobile.domain.model.OtherScheduleItem
 import com.jupiterp.jupiterpmobile.domain.model.ScheduleBlock
 import com.jupiterp.jupiterpmobile.domain.model.ScheduleSelection
 import com.jupiterp.jupiterpmobile.domain.model.Section
+import com.jupiterp.jupiterpmobile.domain.model.ServedTerm
+import com.jupiterp.jupiterpmobile.domain.model.Terms
 import com.jupiterp.jupiterpmobile.domain.model.StoredSchedule
+import com.jupiterp.jupiterpmobile.domain.model.normalizeNameForSearch
 import com.jupiterp.jupiterpmobile.addToCalendar
+import com.jupiterp.jupiterpmobile.shareText
+import com.jupiterp.jupiterpmobile.deeplink.AppLink
+import com.jupiterp.jupiterpmobile.deeplink.AppLinks
 import com.jupiterp.jupiterpmobile.deeplink.DeepLinkHandler
 import com.jupiterp.jupiterpmobile.deeplink.ShareLink
 import com.jupiterp.jupiterpmobile.hasKnownSemesterDates
@@ -29,7 +38,8 @@ import kotlinx.coroutines.launch
  */
 class MainViewModel(
     private val courseRepository: CourseRepository,
-    private val scheduleRepository: ScheduleRepository
+    private val scheduleRepository: ScheduleRepository,
+    private val gradesRepository: GradesRepository
 ) : ViewModel() {
 
     // Search state
@@ -98,25 +108,39 @@ class MainViewModel(
     private val _showSavedSchedulesRequest = MutableStateFlow(false)
     val showSavedSchedulesRequest: StateFlow<Boolean> = _showSavedSchedulesRequest.asStateFlow()
 
-    // Instructor ratings cache
-    private val _instructorRatings = MutableStateFlow<Map<String, Instructor>>(emptyMap())
-    val instructorRatings: StateFlow<Map<String, Instructor>> = _instructorRatings.asStateFlow()
+    // Every instructor the app knows about, keyed by slug (and by name for
+    // section instructors the API couldn't resolve). Seeded with all active
+    // instructors at startup, so ratings for this term need no extra requests.
+    private val _instructorDirectory = MutableStateFlow(InstructorDirectory())
+    val instructorDirectory: StateFlow<InstructorDirectory> = _instructorDirectory.asStateFlow()
 
     // All instructors for @mention autocomplete
     private val _allInstructors = MutableStateFlow<List<Instructor>>(emptyList())
 
-    val instructorSuggestions: StateFlow<List<String>> = combine(
+    val instructorSuggestions: StateFlow<List<Instructor>> = combine(
         _searchQuery, _allInstructors
     ) { query, instructors ->
         val atIdx = query.indexOf('@')
         if (atIdx < 0) return@combine emptyList()
-        val token = query.substring(atIdx + 1).trim()
+        // Accent- and punctuation-insensitive, so "@obrien" and "@jose" match
+        val token = normalizeNameForSearch(query.substring(atIdx + 1)).replace(" ", "")
         if (token.length < 2) return@combine emptyList()
         instructors
-            .map { it.name }
-            .filter { it.contains(token, ignoreCase = true) }
+            .filter { normalizeNameForSearch(it.name).replace(" ", "").contains(token) }
             .take(5)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Grade distributions per course code, loaded lazily as cards appear
+    val courseGrades: StateFlow<Map<String, CourseGradesState>> = gradesRepository.courseGrades
+
+    // The term the API is serving (e.g. 202701), once known
+    private val _servedTerm = MutableStateFlow<Int?>(null)
+    val servedTerm: StateFlow<Int?> = _servedTerm.asStateFlow()
+
+    // A jupiterp.com review or professor link that opened the app, waiting
+    // for the UI to route it
+    private val _pendingAppLink = MutableStateFlow<AppLink?>(null)
+    val pendingAppLink: StateFlow<AppLink?> = _pendingAppLink.asStateFlow()
 
     private var searchJob: Job? = null
 
@@ -129,6 +153,7 @@ class MainViewModel(
     init {
         loadDepartments()
         loadAllInstructors()
+        loadServedTerm()
         viewModelScope.launch {
             scheduleRepository.errors.collect { showSnackbar(it) }
         }
@@ -136,8 +161,27 @@ class MainViewModel(
             DeepLinkHandler.pendingUrl.collect { url ->
                 if (url != null) {
                     DeepLinkHandler.consume()
-                    importSharedSchedule(url)
+                    val appLink = AppLinks.parse(url)
+                    if (appLink != null) {
+                        _pendingAppLink.value = appLink
+                    } else {
+                        importSharedSchedule(url)
+                    }
                 }
+            }
+        }
+    }
+
+    /** Called by the UI once it has routed [pendingAppLink]. */
+    fun consumeAppLink() {
+        _pendingAppLink.value = null
+    }
+
+    private fun loadServedTerm() {
+        viewModelScope.launch {
+            courseRepository.getServedTerm()?.let { term ->
+                ServedTerm.code = term
+                _servedTerm.value = term
             }
         }
     }
@@ -226,6 +270,7 @@ class MainViewModel(
             courseRepository.getAllInstructorsForSuggestions()
                 .onSuccess { instructors ->
                     _allInstructors.value = instructors
+                    _instructorDirectory.update { it.withInstructors(instructors) }
                 }
         }
     }
@@ -327,26 +372,55 @@ class MainViewModel(
     }
 
     /**
-     * Load instructor ratings for courses
+     * Fill in directory entries for the found courses' instructors that the
+     * startup load didn't cover: resolved slugs it missed, and names the API
+     * couldn't resolve to a slug at all.
      */
     private fun loadInstructorRatings(courses: List<Course>) {
-        val instructorNames = courses
+        val directory = _instructorDirectory.value
+        val links = courses
             .flatMap { it.sections ?: emptyList() }
-            .flatMap { it.instructors }
-            .filter { it.isNotBlank() && !it.contains("TBA", ignoreCase = true) }
+            .flatMap { it.instructorLinks }
+        val missingSlugs = links.mapNotNull { (_, slug) -> slug }
+            .filter { it !in directory.bySlug }
+            .distinct()
+        val unresolvedNames = links.filter { (name, slug) -> slug == null && name !in directory.byName }
+            .map { it.first }
             .distinct()
 
-        if (instructorNames.isEmpty()) return
+        if (missingSlugs.isEmpty() && unresolvedNames.isEmpty()) return
 
         viewModelScope.launch {
-            // Fetch all instructor ratings at once
-            courseRepository.searchInstructors(instructorNames)
-                .onSuccess { instructors ->
-                    _instructorRatings.update { current ->
-                        current + instructors.associateBy { it.name }
-                    }
-                }
+            val bySlug = courseRepository.getInstructorsBySlugs(missingSlugs)
+            val byName = if (unresolvedNames.isEmpty()) emptyList()
+            else courseRepository.searchInstructors(unresolvedNames).getOrNull().orEmpty()
+            _instructorDirectory.update { it.withInstructors(bySlug + byName) }
         }
+    }
+
+    /**
+     * Loads a course's grade distribution. Called by a card once it has been
+     * on screen briefly, so results scrolled past quickly never fetch.
+     */
+    fun loadCourseGrades(courseCode: String, retryError: Boolean = false) {
+        viewModelScope.launch {
+            gradesRepository.ensureCourseGrades(courseCode, retryError)
+        }
+    }
+
+    /**
+     * Replace the search with one course, e.g. from a professor's profile.
+     * Clears filters so the course isn't hidden by an unrelated department or
+     * Gen-Ed filter, and expands the card.
+     */
+    fun searchForCourse(courseCode: String) {
+        searchJob?.cancel()
+        _searchQuery.value = courseCode
+        _selectedDepartment.value = null
+        _selectedGenEds.value = emptyList()
+        _selectedInstructor.value = null
+        _expandedCourseCode.value = courseCode
+        searchCourses()
     }
 
     /**
@@ -500,6 +574,33 @@ class MainViewModel(
     }
 
     /**
+     * Share the current schedule as a jupiterp.com link. The link opens on
+     * the site for anyone, and in this app for people who have it.
+     */
+    fun shareSchedule() {
+        val selections = currentSelections.value
+        if (selections.isEmpty()) {
+            showSnackbar("No courses in schedule to share")
+            return
+        }
+        val share = AppLinks.scheduleShare(selections)
+        if (share == null) {
+            showSnackbar("Pick a section for a course to share your schedule")
+            return
+        }
+        val term = _servedTerm.value?.let { Terms.label(it) }
+        val text = if (term != null) "My $term schedule on Jupiterp: ${share.url}"
+        else "My schedule on Jupiterp: ${share.url}"
+        if (!shareText(text, subject = "My Jupiterp schedule")) {
+            showSnackbar("Couldn't open the share sheet")
+            return
+        }
+        if (share.skippedCourses.isNotEmpty()) {
+            showSnackbar("Shared without ${share.skippedCourses.joinToString(", ")}, which have no section picked")
+        }
+    }
+
+    /**
      * Export current schedule to the device calendar
      */
     fun exportSchedule() {
@@ -538,10 +639,4 @@ class MainViewModel(
         _snackbarMessage.value = null
     }
 
-    /**
-     * Get instructor rating
-     */
-    fun getInstructorRating(instructorName: String): Float? {
-        return _instructorRatings.value[instructorName]?.averageRating
-    }
 }

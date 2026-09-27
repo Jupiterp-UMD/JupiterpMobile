@@ -334,90 +334,61 @@ fun SectionRow(
 }
 
 /**
- * Meeting time/location info
+ * Meeting time/location info.
+ *
+ * Time and location are each kept on one line and wrap as whole chunks: in a
+ * narrow container the location drops below the time instead of being
+ * squeezed into a column one character wide.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MeetingInfo(
     meeting: ClassMeeting,
     modifier: Modifier = Modifier
 ) {
-    Row(
+    FlowRow(
         modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         when (meeting) {
             is ClassMeeting.InPerson -> {
-                Icon(
-                    imageVector = Icons.Outlined.Schedule,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = JupiterpTheme.extendedColors.textSecondary
-                )
-                Text(
-                    text = "${meeting.classtime.days} ${meeting.classtime.timeRange}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JupiterpTheme.extendedColors.textSecondary
-                )
-                Icon(
-                    imageVector = Icons.Outlined.LocationOn,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = JupiterpTheme.extendedColors.textSecondary
-                )
-                Text(
-                    text = meeting.location.display,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JupiterpTheme.extendedColors.textSecondary
-                )
+                MeetingChunk(Icons.Outlined.Schedule, "${meeting.classtime.days} ${meeting.classtime.timeRange}")
+                MeetingChunk(Icons.Outlined.LocationOn, meeting.location.display)
             }
             is ClassMeeting.OnlineSync -> {
-                Icon(
-                    imageVector = Icons.Outlined.Videocam,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = JupiterpTheme.extendedColors.textSecondary
-                )
-                Text(
-                    text = "Online Sync - ${meeting.classtime.days} ${meeting.classtime.timeRange}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JupiterpTheme.extendedColors.textSecondary
-                )
+                MeetingChunk(Icons.Outlined.Videocam, "${meeting.classtime.days} ${meeting.classtime.timeRange}")
+                MeetingChunk(null, "Online")
             }
-            is ClassMeeting.OnlineAsync -> {
-                Icon(
-                    imageVector = Icons.Outlined.CloudQueue,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = JupiterpTheme.extendedColors.textSecondary
-                )
-                Text(
-                    text = "Online Asynchronous",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JupiterpTheme.extendedColors.textSecondary
-                )
-            }
-            is ClassMeeting.TBA -> {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.HelpOutline,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = JupiterpTheme.extendedColors.textSecondary
-                )
-                Text(
-                    text = "TBA",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JupiterpTheme.extendedColors.textSecondary
-                )
-            }
-            is ClassMeeting.Unknown -> {
-                Text(
-                    text = "Unknown",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JupiterpTheme.extendedColors.textSecondary
-                )
-            }
+            is ClassMeeting.OnlineAsync -> MeetingChunk(Icons.Outlined.CloudQueue, "Online Asynchronous")
+            is ClassMeeting.TBA -> MeetingChunk(Icons.AutoMirrored.Outlined.HelpOutline, "TBA")
+            is ClassMeeting.Unknown -> MeetingChunk(null, "Unknown")
         }
+    }
+}
+
+/** An icon and a label that never break across lines. */
+@Composable
+private fun MeetingChunk(icon: ImageVector?, text: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = JupiterpTheme.extendedColors.textSecondary
+            )
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = JupiterpTheme.extendedColors.textSecondary,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
 

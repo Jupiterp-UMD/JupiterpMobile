@@ -1,14 +1,17 @@
 package com.jupiterp.jupiterpmobile.ui.screens.generator
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -26,10 +29,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,9 +52,11 @@ import com.jupiterp.jupiterpmobile.domain.scheduler.sortedByCriterion
 import com.jupiterp.jupiterpmobile.ui.components.FilterChip
 import com.jupiterp.jupiterpmobile.ui.components.MeetingInfo
 import com.jupiterp.jupiterpmobile.ui.components.RatingChip
-import com.jupiterp.jupiterpmobile.ui.components.SectionRow
+import com.jupiterp.jupiterpmobile.ui.components.SeatsBadge
 import com.jupiterp.jupiterpmobile.ui.components.SolarSystemLoader
 import com.jupiterp.jupiterpmobile.ui.components.WeeklyScheduleView
+import com.jupiterp.jupiterpmobile.ui.components.toGpaString
+import com.jupiterp.jupiterpmobile.domain.scheduler.SectionKey
 import com.jupiterp.ui.theme.JupiterpTheme
 import kotlin.math.roundToInt
 
@@ -78,7 +85,6 @@ fun GeneratorScreen(
     val doneState = state as? GeneratorViewModel.GenerationState.Done
     // Drop a stale detail selection if generation is rerun
     LaunchedEffect(doneState) { if (doneState == null) detailSchedule = null }
-    val viewingDetail = doneState != null && detailSchedule != null
 
     // Schedules in the order shown on the results list; the detail view's
     // prev/next buttons step through this same ordering.
@@ -86,110 +92,163 @@ fun GeneratorScreen(
         doneState?.schedules?.sortedByCriterion(sortCriterion).orEmpty()
     }
 
-    val title = when {
-        viewingDetail -> "Schedule Details"
-        doneState != null -> "Generated Schedules"
-        else -> "Schedule Generator"
-    }
-
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-            // Top bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = {
-                    when {
-                        viewingDetail -> detailSchedule = null
-                        state is GeneratorViewModel.GenerationState.Done ||
-                            state is GeneratorViewModel.GenerationState.Loading ->
-                            viewModel.backToRequirements()
-                        else -> onClose()
-                    }
-                }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                }
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-
-                // Step between generated schedules without leaving the detail view
-                if (viewingDetail) {
-                    val index = sortedSchedules.indexOf(detailSchedule)
-                    Spacer(Modifier.weight(1f))
-                    IconButton(
-                        onClick = { sortedSchedules.getOrNull(index - 1)?.let { detailSchedule = it } },
-                        enabled = index > 0
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Previous schedule")
-                    }
-                    IconButton(
-                        onClick = { sortedSchedules.getOrNull(index + 1)?.let { detailSchedule = it } },
-                        enabled = index in 0 until sortedSchedules.lastIndex
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Next schedule")
-                    }
-                }
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            // Expanded width (tablets in landscape): list and detail side by side,
+            // requirements in two columns. Detail never replaces the list there.
+            val wide = maxWidth >= 840.dp
+            val viewingDetail = !wide && doneState != null && detailSchedule != null
+            val title = when {
+                viewingDetail -> "Schedule Details"
+                doneState != null -> "Generated Schedules"
+                else -> "Schedule Generator"
             }
 
-            when (val s = state) {
-                is GeneratorViewModel.GenerationState.Loading -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        SolarSystemLoader(size = 120.dp, color = JupiterpTheme.extendedColors.orange)
+            Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+                // Top bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = {
+                        when {
+                            viewingDetail -> detailSchedule = null
+                            state is GeneratorViewModel.GenerationState.Done ||
+                                state is GeneratorViewModel.GenerationState.Loading ->
+                                viewModel.backToRequirements()
+                            else -> onClose()
+                        }
+                    }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
-                }
-
-                is GeneratorViewModel.GenerationState.Done -> {
-                    val detail = detailSchedule
-                    if (detail != null) {
-                        ScheduleDetailView(
-                            schedule = detail,
-                            rank = remember(sortedSchedules, detail) {
-                                sortedSchedules.indexOf(detail) + 1
-                            },
-                            instructorRatings = s.instructorRatings,
-                            currentScheduleSize = currentScheduleSize,
-                            onApply = {
-                                viewModel.applySchedule(detail)
-                                onClose()
-                            },
-                            onSave = { name -> viewModel.saveSchedule(detail, name) }
-                        )
-                    } else {
-                        ResultsContent(
-                            schedules = s.schedules,
-                            truncated = s.truncated,
-                            pinNotices = s.pinNotices,
-                            sortCriterion = sortCriterion,
-                            onSortChange = viewModel::setSortCriterion,
-                            currentScheduleSize = currentScheduleSize,
-                            onOpenDetail = { detailSchedule = it },
-                            onApply = { schedule ->
-                                viewModel.applySchedule(schedule)
-                                onClose()
-                            },
-                            onSave = viewModel::saveSchedule
-                        )
-                    }
-                }
-
-                else -> {
-                    RequirementsContent(
-                        requirements = requirements,
-                        constraints = constraints,
-                        courseQuery = courseQuery,
-                        courseSuggestions = courseSuggestions,
-                        courseSections = courseSections,
-                        currentScheduleSize = currentScheduleSize,
-                        noSchedules = s as? GeneratorViewModel.GenerationState.NoSchedules,
-                        failure = s as? GeneratorViewModel.GenerationState.Failed,
-                        viewModel = viewModel
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
                     )
+
+                    // Step between generated schedules without leaving the detail view
+                    if (viewingDetail) {
+                        val index = sortedSchedules.indexOf(detailSchedule)
+                        Spacer(Modifier.weight(1f))
+                        IconButton(
+                            onClick = { sortedSchedules.getOrNull(index - 1)?.let { detailSchedule = it } },
+                            enabled = index > 0
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Previous schedule")
+                        }
+                        IconButton(
+                            onClick = { sortedSchedules.getOrNull(index + 1)?.let { detailSchedule = it } },
+                            enabled = index in 0 until sortedSchedules.lastIndex
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Next schedule")
+                        }
+                    }
+                }
+
+                // Between phone and expanded widths, keep the single-column layout
+                // at a readable width instead of stretching it edge to edge
+                Box(
+                    modifier = if (wide) Modifier.fillMaxSize()
+                    else Modifier.fillMaxSize().wrapContentWidth(Alignment.CenterHorizontally).widthIn(max = 720.dp)
+                ) {
+                    when (val s = state) {
+                        is GeneratorViewModel.GenerationState.Loading -> {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                SolarSystemLoader(size = 120.dp, color = JupiterpTheme.extendedColors.orange)
+                            }
+                        }
+
+                        is GeneratorViewModel.GenerationState.Done -> {
+                            val detail = detailSchedule
+                            if (wide) {
+                                // The first schedule is shown until another is picked
+                                val selected = detail?.takeIf { it in sortedSchedules } ?: sortedSchedules.firstOrNull()
+                                Row(Modifier.fillMaxSize()) {
+                                    ResultsContent(
+                                        schedules = s.schedules,
+                                        truncated = s.truncated,
+                                        pinNotices = s.pinNotices,
+                                        sortCriterion = sortCriterion,
+                                        onSortChange = viewModel::setSortCriterion,
+                                        currentScheduleSize = currentScheduleSize,
+                                        onOpenDetail = { detailSchedule = it },
+                                        onApply = { schedule ->
+                                            viewModel.applySchedule(schedule)
+                                            onClose()
+                                        },
+                                        onSave = viewModel::saveSchedule,
+                                        modifier = Modifier.width(440.dp),
+                                        selected = selected
+                                    )
+                                    VerticalDivider(color = JupiterpTheme.extendedColors.divider)
+                                    if (selected != null) {
+                                        ScheduleDetailView(
+                                            schedule = selected,
+                                            rank = sortedSchedules.indexOf(selected) + 1,
+                                            instructorRatings = s.instructorRatings,
+                                            currentScheduleSize = currentScheduleSize,
+                                            onApply = {
+                                                viewModel.applySchedule(selected)
+                                                onClose()
+                                            },
+                                            onSave = { name -> viewModel.saveSchedule(selected, name) },
+                                            sectionGpas = s.sectionGpas,
+                                            wide = true,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            } else if (detail != null) {
+                                ScheduleDetailView(
+                                    schedule = detail,
+                                    rank = remember(sortedSchedules, detail) {
+                                        sortedSchedules.indexOf(detail) + 1
+                                    },
+                                    instructorRatings = s.instructorRatings,
+                                    currentScheduleSize = currentScheduleSize,
+                                    onApply = {
+                                        viewModel.applySchedule(detail)
+                                        onClose()
+                                    },
+                                    onSave = { name -> viewModel.saveSchedule(detail, name) },
+                                    sectionGpas = s.sectionGpas
+                                )
+                            } else {
+                                ResultsContent(
+                                    schedules = s.schedules,
+                                    truncated = s.truncated,
+                                    pinNotices = s.pinNotices,
+                                    sortCriterion = sortCriterion,
+                                    onSortChange = viewModel::setSortCriterion,
+                                    currentScheduleSize = currentScheduleSize,
+                                    onOpenDetail = { detailSchedule = it },
+                                    onApply = { schedule ->
+                                        viewModel.applySchedule(schedule)
+                                        onClose()
+                                    },
+                                    onSave = viewModel::saveSchedule
+                                )
+                            }
+                        }
+
+                        else -> {
+                            RequirementsContent(
+                                requirements = requirements,
+                                constraints = constraints,
+                                courseQuery = courseQuery,
+                                courseSuggestions = courseSuggestions,
+                                courseSections = courseSections,
+                                currentScheduleSize = currentScheduleSize,
+                                noSchedules = s as? GeneratorViewModel.GenerationState.NoSchedules,
+                                failure = s as? GeneratorViewModel.GenerationState.Failed,
+                                viewModel = viewModel,
+                                wide = wide
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -210,176 +269,215 @@ private fun RequirementsContent(
     currentScheduleSize: Int,
     noSchedules: GeneratorViewModel.GenerationState.NoSchedules?,
     failure: GeneratorViewModel.GenerationState.Failed?,
-    viewModel: GeneratorViewModel
+    viewModel: GeneratorViewModel,
+    wide: Boolean = false
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // No-results explanation, shown right at the top after a failed run
-            if (noSchedules != null) {
-                NoSchedulesCard(
-                    noSchedules = noSchedules,
-                    constraints = constraints,
-                    onApplyHint = viewModel::applyRelaxation
-                )
-            }
-            if (failure != null) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Outlined.ErrorOutline, null,
-                            tint = MaterialTheme.colorScheme.error
-                        )
-                        Text(failure.message, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-
-            // Courses
-            Text(
-                "Courses (${requirements.size})",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(top = 4.dp)
+    // The page's three parts, laid out as one column on phones and as
+    // courses | constraints side by side on wide screens
+    val alerts: @Composable ColumnScope.() -> Unit = {
+        // No-results explanation, shown right at the top after a failed run
+        if (noSchedules != null) {
+            NoSchedulesCard(
+                noSchedules = noSchedules,
+                constraints = constraints,
+                onApplyHint = viewModel::applyRelaxation
             )
-
-            if (requirements.isEmpty()) {
-                Text(
-                    "Add the courses you need to take. Mark each as required or optional, and pin a specific section or professor to force it onto every schedule.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = JupiterpTheme.extendedColors.textSecondary
-                )
-            }
-
-            requirements.forEach { requirement ->
-                RequirementCard(
-                    requirement = requirement,
-                    sections = courseSections[requirement.courseCode],
-                    onToggleRequired = { viewModel.toggleRequired(requirement.courseCode) },
-                    onLoadSections = { viewModel.loadSectionsFor(requirement.courseCode) },
-                    onPinSection = { viewModel.pinSection(requirement.courseCode, it) },
-                    onPinInstructor = { viewModel.pinInstructor(requirement.courseCode, it) },
-                    onClearPin = { viewModel.clearPin(requirement.courseCode) },
-                    onRemove = { viewModel.removeCourse(requirement.courseCode) }
-                )
-            }
-
-            if (currentScheduleSize > 0) {
-                TextButton(onClick = viewModel::seedFromCurrentSchedule) {
-                    Icon(
-                        Icons.Outlined.School, null,
-                        modifier = Modifier.size(18.dp),
-                        tint = JupiterpTheme.extendedColors.orange
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "Use my current schedule ($currentScheduleSize courses)",
-                        color = JupiterpTheme.extendedColors.orange
-                    )
-                }
-            }
-
-            // Add-course search
-            OutlinedTextField(
-                value = courseQuery,
-                onValueChange = viewModel::onCourseQueryChange,
+        }
+        if (failure != null) {
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Add a course (e.g., CMSC132)") },
-                leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                singleLine = true,
                 shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = JupiterpTheme.extendedColors.orange,
-                    cursorColor = JupiterpTheme.extendedColors.orange
-                )
-            )
-
-            if (courseSuggestions.isNotEmpty()) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 4.dp
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
-                        courseSuggestions.take(6).forEachIndexed { index, suggestion ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { viewModel.addCourse(suggestion) }
-                                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Text(
-                                    suggestion.courseCode,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = JupiterpTheme.extendedColors.orange
-                                )
-                                Text(
-                                    suggestion.courseName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            if (index < courseSuggestions.take(6).lastIndex) {
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(horizontal = 16.dp),
-                                    color = JupiterpTheme.extendedColors.divider
-                                )
-                            }
+                    Icon(
+                        Icons.Outlined.ErrorOutline, null,
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                    Text(failure.message, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+    val courses: @Composable ColumnScope.() -> Unit = {
+        // Courses
+        Text(
+            "Courses (${requirements.size})",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+
+        if (requirements.isEmpty()) {
+            Text(
+                "Add the courses you need to take. Mark each as required or optional, and pin a specific section or professor to force it onto every schedule.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = JupiterpTheme.extendedColors.textSecondary
+            )
+        }
+
+        requirements.forEach { requirement ->
+            RequirementCard(
+                requirement = requirement,
+                sections = courseSections[requirement.courseCode],
+                onToggleRequired = { viewModel.toggleRequired(requirement.courseCode) },
+                onLoadSections = { viewModel.loadSectionsFor(requirement.courseCode) },
+                onPinSection = { viewModel.pinSection(requirement.courseCode, it) },
+                onPinInstructor = { viewModel.pinInstructor(requirement.courseCode, it) },
+                onClearPin = { viewModel.clearPin(requirement.courseCode) },
+                onRemove = { viewModel.removeCourse(requirement.courseCode) }
+            )
+        }
+
+        if (currentScheduleSize > 0) {
+            TextButton(onClick = viewModel::seedFromCurrentSchedule) {
+                Icon(
+                    Icons.Outlined.School, null,
+                    modifier = Modifier.size(18.dp),
+                    tint = JupiterpTheme.extendedColors.orange
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "Use my current schedule ($currentScheduleSize course${if (currentScheduleSize != 1) "s" else ""})",
+                    color = JupiterpTheme.extendedColors.orange
+                )
+            }
+        }
+
+        // Add-course search
+        OutlinedTextField(
+            value = courseQuery,
+            onValueChange = viewModel::onCourseQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Add a course (e.g., CMSC132)") },
+            leadingIcon = { Icon(Icons.Outlined.Search, null) },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = JupiterpTheme.extendedColors.orange,
+                cursorColor = JupiterpTheme.extendedColors.orange
+            )
+        )
+
+        if (courseSuggestions.isNotEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 4.dp
+            ) {
+                Column {
+                    courseSuggestions.take(6).forEachIndexed { index, suggestion ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.addCourse(suggestion) }
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                suggestion.courseCode,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = JupiterpTheme.extendedColors.orange
+                            )
+                            Text(
+                                suggestion.courseName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (index < courseSuggestions.take(6).lastIndex) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = JupiterpTheme.extendedColors.divider
+                            )
                         }
                     }
                 }
             }
+        }
+    }
+    val constraintsSection: @Composable ColumnScope.() -> Unit = {
+        // Constraints
+        Text(
+            "Requirements",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 8.dp)
+        )
 
-            // Constraints
-            Text(
-                "Requirements",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(top = 8.dp)
-            )
+        ConstraintsCard(constraints = constraints, viewModel = viewModel)
+    }
 
-            ConstraintsCard(constraints = constraints, viewModel = viewModel)
-
-            Spacer(Modifier.height(8.dp))
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (wide) {
+            Row(
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    alerts()
+                    courses()
+                    Spacer(Modifier.height(8.dp))
+                }
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    constraintsSection()
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                alerts()
+                courses()
+                constraintsSection()
+                Spacer(Modifier.height(8.dp))
+            }
         }
 
-        // Generate button pinned at the bottom
+        // Generate button pinned at the bottom; a full-width bar would be
+        // absurdly long on a tablet, so wide layouts right-align a fixed width
         Surface(color = MaterialTheme.colorScheme.background) {
-            Button(
-                onClick = viewModel::generate,
-                enabled = requirements.isNotEmpty(),
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp)
+                    .padding(horizontal = if (wide) 24.dp else 16.dp, vertical = 16.dp)
                     .navigationBarsPadding(),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = JupiterpTheme.extendedColors.orange
-                )
+                horizontalArrangement = Arrangement.End
             ) {
-                Text(
-                    "Generate schedules",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Button(
+                    onClick = viewModel::generate,
+                    enabled = requirements.isNotEmpty(),
+                    modifier = if (wide) Modifier.width(360.dp) else Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = JupiterpTheme.extendedColors.orange
+                    )
+                ) {
+                    Text(
+                        "Generate schedules",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     }
@@ -495,8 +593,12 @@ private fun ChoicePill(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** Picker to force a course to one professor or one specific section. */
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * Picker to force a course to one professor or one specific section. A
+ * full-width sheet rather than a dialog: section rows carry meeting times and
+ * rooms, which need the width. One tap picks and closes.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SectionPinDialog(
     requirement: GeneratorViewModel.RequirementItem,
@@ -506,90 +608,162 @@ private fun SectionPinDialog(
     onClearPin: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("Force ${requirement.courseCode}", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 480.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                if (sections == null) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                        horizontalArrangement = Arrangement.Center
-                    ) {
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp)
+        ) {
+            item {
+                Column(Modifier.padding(start = 4.dp, bottom = 12.dp)) {
+                    Text("Pin ${requirement.courseCode}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Every generated schedule will use your choice.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = JupiterpTheme.extendedColors.textSecondary
+                    )
+                }
+            }
+
+            if (sections == null) {
+                item {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(28.dp),
                             color = JupiterpTheme.extendedColors.orange,
                             strokeWidth = 3.dp
                         )
                     }
-                } else {
-                    ChoicePill(
-                        label = "Any section",
-                        selected = requirement.pinnedSectionCode == null && requirement.pinnedInstructor == null,
-                        onClick = onClearPin
-                    )
+                }
+                return@LazyColumn
+            }
 
-                    val instructors = sections
-                        .flatMap { it.instructors }
-                        .filter { it.isNotBlank() }
-                        .distinct()
-                    if (instructors.isNotEmpty()) {
-                        Text(
-                            "By professor",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            instructors.forEach { name ->
-                                FilterChip(
-                                    label = name,
-                                    selected = requirement.pinnedInstructor == name,
-                                    onClick = { onPinInstructor(name) }
-                                )
-                            }
-                        }
-                    }
-
+            item {
+                PinOptionRow(
+                    selected = requirement.pinnedSectionCode == null && requirement.pinnedInstructor == null,
+                    onClick = onClearPin
+                ) {
+                    Text("Any section", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
                     Text(
-                        "Specific section",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "Let the generator choose",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = JupiterpTheme.extendedColors.textSecondary
                     )
-                    if (sections.isEmpty()) {
+                }
+            }
+
+            // One row per professor, with how many sections and open seats they have
+            val professors = sections
+                .flatMap { section -> section.instructors.filter { it.isNotBlank() }.map { it to section } }
+                .groupBy({ it.first }, { it.second })
+            if (professors.isNotEmpty()) {
+                item { PinGroupHeader("Professor") }
+                items(professors.entries.toList(), key = { "prof-${it.key}" }) { (name, taught) ->
+                    PinOptionRow(
+                        selected = requirement.pinnedInstructor == name,
+                        onClick = { onPinInstructor(name) }
+                    ) {
                         Text(
-                            "No sections available for this course.",
+                            name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        val open = taught.sumOf { it.openSeats.coerceAtLeast(0) }
+                        Text(
+                            "${taught.size} section${if (taught.size != 1) "s" else ""} · " +
+                                if (open > 0) "$open open seats" else "all full",
                             style = MaterialTheme.typography.bodySmall,
                             color = JupiterpTheme.extendedColors.textSecondary
                         )
-                    } else {
-                        sections.forEach { section ->
-                            SectionRow(
-                                section = section,
-                                isSelected = requirement.pinnedSectionCode == section.sectionCode,
-                                instructorRating = null,
-                                onToggle = { onPinSection(section.sectionCode) }
-                            )
-                        }
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Done", color = JupiterpTheme.extendedColors.orange)
+
+            item { PinGroupHeader("Section") }
+            if (sections.isEmpty()) {
+                item {
+                    Text(
+                        "No sections available for this course.",
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = JupiterpTheme.extendedColors.textSecondary
+                    )
+                }
+            } else {
+                items(sections, key = { "sec-${it.sectionCode}" }) { section ->
+                    PinOptionRow(
+                        selected = requirement.pinnedSectionCode == section.sectionCode,
+                        onClick = { onPinSection(section.sectionCode) }
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                section.sectionCode,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = JupiterpTheme.extendedColors.sectionCodes
+                            )
+                            Text(
+                                section.instructors.filter { it.isNotBlank() }.joinToString(", ").ifEmpty { "TBA" },
+                                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            SeatsBadge(openSeats = section.openSeats, totalSeats = section.totalSeats)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        section.meetings.forEach { meeting -> MeetingInfo(meeting = meeting) }
+                    }
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun PinGroupHeader(text: String) {
+    Text(
+        text,
+        modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 4.dp),
+        style = MaterialTheme.typography.labelLarge,
+        color = JupiterpTheme.extendedColors.textSecondary
     )
+}
+
+/** A radio row: the whole row is the tap target. */
+@Composable
+private fun PinOptionRow(
+    selected: Boolean,
+    onClick: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) JupiterpTheme.extendedColors.orangeContainer
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 4.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RadioButton(
+                selected = selected,
+                onClick = null,
+                modifier = Modifier.padding(horizontal = 8.dp),
+                colors = RadioButtonDefaults.colors(selectedColor = JupiterpTheme.extendedColors.orange)
+            )
+            Column(Modifier.weight(1f), content = content)
+        }
+    }
 }
 
 @Composable
@@ -932,7 +1106,10 @@ private fun ResultsContent(
     currentScheduleSize: Int,
     onOpenDetail: (GeneratedSchedule) -> Unit,
     onApply: (GeneratedSchedule) -> Unit,
-    onSave: (GeneratedSchedule, String) -> Unit
+    onSave: (GeneratedSchedule, String) -> Unit,
+    modifier: Modifier = Modifier,
+    /** The schedule shown in the detail pane beside this list, on wide screens. */
+    selected: GeneratedSchedule? = null
 ) {
     val sorted = remember(schedules, sortCriterion) { schedules.sortedByCriterion(sortCriterion) }
 
@@ -953,7 +1130,7 @@ private fun ResultsContent(
         )
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = modifier.fillMaxSize()) {
         if (pinNotices.isNotEmpty()) {
             PinNoticeBanner(
                 notices = pinNotices,
@@ -992,6 +1169,9 @@ private fun ResultsContent(
                 ScheduleResultCard(
                     rank = index + 1,
                     schedule = schedule,
+                    selected = schedule == selected,
+                    // Beside a detail pane the actions live there; cards stay compact
+                    showActions = selected == null,
                     onClick = { onOpenDetail(schedule) },
                     onApply = {
                         if (currentScheduleSize > 0) confirmApply = schedule
@@ -1008,6 +1188,8 @@ private fun ResultsContent(
 private fun ScheduleResultCard(
     rank: Int,
     schedule: GeneratedSchedule,
+    selected: Boolean = false,
+    showActions: Boolean = true,
     onClick: () -> Unit,
     onApply: () -> Unit,
     onSave: () -> Unit
@@ -1019,7 +1201,8 @@ private fun ScheduleResultCard(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp
+        tonalElevation = 2.dp,
+        border = if (selected) BorderStroke(2.dp, JupiterpTheme.extendedColors.orange) else null
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             // Header: rank + title on the left, rating featured on the right
@@ -1073,26 +1256,28 @@ private fun ScheduleResultCard(
                 }
             }
 
-            HorizontalDivider(color = JupiterpTheme.extendedColors.divider)
+            if (showActions) {
+                HorizontalDivider(color = JupiterpTheme.extendedColors.divider)
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = onSave) {
-                    Text("Save", color = JupiterpTheme.extendedColors.textSecondary)
-                }
-                Spacer(Modifier.width(4.dp))
-                Button(
-                    onClick = onApply,
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = JupiterpTheme.extendedColors.orange
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Apply", fontWeight = FontWeight.SemiBold)
+                    TextButton(onClick = onSave) {
+                        Text("Save", color = JupiterpTheme.extendedColors.textSecondary)
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Button(
+                        onClick = onApply,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = JupiterpTheme.extendedColors.orange
+                        )
+                    ) {
+                        Text("Apply", fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
@@ -1112,6 +1297,7 @@ private fun ScheduleCardDetails(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            metrics.avgGpa?.let { ScheduleGpaBadge(it) }
             MetricBadge(creditsText(metrics))
             MetricBadge("${metrics.daysWithClasses} day${if (metrics.daysWithClasses != 1) "s" else ""}")
             MetricBadge(gapText(metrics.totalGapMinutes))
@@ -1185,7 +1371,11 @@ private fun ScheduleDetailView(
     instructorRatings: Map<String, Float>,
     currentScheduleSize: Int,
     onApply: () -> Unit,
-    onSave: (String) -> Unit
+    onSave: (String) -> Unit,
+    sectionGpas: Map<SectionKey, Float> = emptyMap(),
+    /** Detail pane beside the results list: grid and details side by side, actions on top. */
+    wide: Boolean = false,
+    modifier: Modifier = Modifier
 ) {
     val metrics = schedule.metrics
     val blocks = remember(schedule) { ScheduleRepository.getScheduleBlocks(schedule.selections) }
@@ -1207,7 +1397,94 @@ private fun ScheduleDetailView(
         )
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    val details: LazyListScope.() -> Unit = {
+        item { MetricsGrid(metrics) }
+        if (metrics.avgGpa != null) {
+            item {
+                Text(
+                    "Expected GPA comes from each professor's past grades in that course, or the " +
+                        "course average when they have little history. Weighted by credits.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = JupiterpTheme.extendedColors.textSecondary
+                )
+            }
+        }
+        item {
+            Text(
+                "Courses",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        items(schedule.selections) { selection ->
+            CourseDetailCard(
+                selection = selection,
+                instructorRatings = instructorRatings,
+                expectedGpa = sectionGpas[SectionKey(selection.course.courseCode, selection.section.sectionCode)]
+            )
+        }
+    }
+
+    val summary: @Composable () -> Unit = {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RankBadge(rank)
+            Spacer(Modifier.width(10.dp))
+            RatingChip(rating = metrics.avgInstructorRating)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (metrics.avgInstructorRating == null) "No instructor ratings"
+                else "avg • ${metrics.ratedSectionCount}/${metrics.sectionCount} sections rated",
+                style = MaterialTheme.typography.labelMedium,
+                color = JupiterpTheme.extendedColors.textSecondary
+            )
+            metrics.avgGpa?.let {
+                Spacer(Modifier.width(10.dp))
+                ScheduleGpaBadge(it)
+            }
+        }
+    }
+
+    if (wide) {
+        Column(modifier = modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(Modifier.weight(1f)) { summary() }
+                OutlinedButton(onClick = { saving = true }, shape = RoundedCornerShape(12.dp)) {
+                    Text("Save")
+                }
+                Button(
+                    onClick = { if (currentScheduleSize > 0) confirmApply = true else onApply() },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = JupiterpTheme.extendedColors.orange)
+                ) {
+                    Text("Apply to planner", fontWeight = FontWeight.SemiBold)
+                }
+            }
+            HorizontalDivider(color = JupiterpTheme.extendedColors.divider)
+            Row(Modifier.weight(1f).fillMaxWidth().navigationBarsPadding()) {
+                if (blocks.isNotEmpty()) {
+                    WeeklyScheduleView(
+                        scheduleBlocks = blocks,
+                        onBlockClick = { },
+                        modifier = Modifier.weight(1.3f).fillMaxHeight()
+                    )
+                    VerticalDivider(color = JupiterpTheme.extendedColors.divider)
+                }
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    content = details
+                )
+            }
+        }
+        return
+    }
+
+    Column(modifier = modifier.fillMaxSize()) {
         // Full week grid (read-only — tapping a block still shows its info)
         if (blocks.isNotEmpty()) {
             WeeklyScheduleView(
@@ -1223,34 +1500,8 @@ private fun ScheduleDetailView(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RankBadge(rank)
-                    Spacer(Modifier.width(10.dp))
-                    RatingChip(rating = metrics.avgInstructorRating)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (metrics.avgInstructorRating == null) "No instructor ratings"
-                        else "avg • ${metrics.ratedSectionCount}/${metrics.sectionCount} sections rated",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = JupiterpTheme.extendedColors.textSecondary
-                    )
-                }
-            }
-
-            item { MetricsGrid(metrics) }
-
-            item {
-                Text(
-                    "Courses",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            items(schedule.selections) { selection ->
-                CourseDetailCard(selection = selection, instructorRatings = instructorRatings)
-            }
+            item { summary() }
+            details()
         }
 
         // Action bar
@@ -1287,7 +1538,8 @@ private fun ScheduleDetailView(
 @Composable
 private fun CourseDetailCard(
     selection: com.jupiterp.jupiterpmobile.domain.model.ScheduleSelection,
-    instructorRatings: Map<String, Float>
+    instructorRatings: Map<String, Float>,
+    expectedGpa: Float? = null
 ) {
     val palette = JupiterpTheme.extendedColors.scheduleColors
     val accent = palette[selection.colorIndex % palette.size]
@@ -1330,6 +1582,7 @@ private fun CourseDetailCard(
                         style = MaterialTheme.typography.labelMedium,
                         color = JupiterpTheme.extendedColors.textSecondary
                     )
+                    expectedGpa?.let { ScheduleGpaBadge(it) }
                 }
                 Text(
                     selection.course.name,
@@ -1397,6 +1650,9 @@ private fun CourseDetailCard(
 @Composable
 private fun MetricsGrid(metrics: com.jupiterp.jupiterpmobile.domain.scheduler.ScheduleMetrics) {
     val stats = buildList {
+        metrics.avgGpa?.let { gpa ->
+            add("Expected GPA" to "${gpa.toGpaString()} (${metrics.gpaSectionCount}/${metrics.sectionCount} sections)")
+        }
         add("Credits" to creditsText(metrics))
         add("Days on campus" to "${metrics.daysWithClasses}")
         add("Gaps / week" to gapDurationText(metrics.totalGapMinutes))
@@ -1454,6 +1710,34 @@ private fun RankBadge(rank: Int) {
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = JupiterpTheme.extendedColors.orange
+            )
+        }
+    }
+}
+
+/** Expected GPA as a neutral badge with a grade-scale dot, like the planner's GPA pills. */
+@Composable
+private fun ScheduleGpaBadge(gpa: Float) {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Box(
+                Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(JupiterpTheme.extendedColors.gpaColor(gpa))
+            )
+            Text(
+                "${gpa.toGpaString()} GPA",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

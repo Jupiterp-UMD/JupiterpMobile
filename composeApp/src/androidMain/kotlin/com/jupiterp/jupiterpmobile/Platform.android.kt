@@ -35,3 +35,17 @@ actual fun addToCalendar(selections: List<ScheduleSelection>, onResult: (Boolean
     context.startActivity(intent)
     onResult(true)
 }
+
+actual fun shareText(text: String, subject: String?): Boolean {
+    val context = AndroidContextHolder.appContext ?: return false
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+        subject?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
+    }
+    // Started from the application context, so the chooser needs its own task
+    val chooser = Intent.createChooser(send, subject).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    return runCatching { context.startActivity(chooser) }.isSuccess
+}

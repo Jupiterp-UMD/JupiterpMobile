@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
 
 /**
  * Characterization tests for ICS calendar export. Expected values are derived
- * from the FALL/SPRING tables in Util.kt and pin the current correct behavior.
+ * from the SEMESTERS table in Util.kt and pin the current correct behavior.
  */
 class IcsGenerationTest {
 
@@ -59,29 +59,67 @@ class IcsGenerationTest {
     fun januarySelectsSpringOfSameYear() {
         val semester = activeSemester(20260115)
         assertNotNull(semester)
-        assertEquals(20260126, semester.firstMondayInt)
+        assertEquals(20260126, semester.firstClassDayInt)
     }
 
     @Test
     fun aprilSelectsFallOfSameYearLowerBoundary() {
         // April is < 11 -> Fall of this year (the lower month boundary).
-        assertEquals(20260831, activeSemester(20260401)?.firstMondayInt)
+        assertEquals(20260831, activeSemester(20260401, servedTerm = null)?.firstClassDayInt)
     }
 
     @Test
     fun novemberSelectsSpringOfNextYearUpperBoundary() {
-        // November -> Spring of next year (the upper boundary).
-        assertEquals(20270125, activeSemester(20261101)?.firstMondayInt)
+        // November -> Spring of next year (the upper boundary). Spring 2027
+        // classes start on Wednesday, Jan 27.
+        assertEquals(20270127, activeSemester(20261101, servedTerm = null)?.firstClassDayInt)
     }
 
     @Test
     fun decemberSelectsSpringOfNextYear() {
-        assertEquals(20270125, activeSemester(20261215)?.firstMondayInt)
+        assertEquals(20270127, activeSemester(20261215, servedTerm = null)?.firstClassDayInt)
     }
 
     @Test
     fun yearAbsentFromTablesReturnsNull() {
-        assertNull(activeSemester(20990101))
+        assertNull(activeSemester(20990101, servedTerm = null))
+    }
+
+    @Test
+    fun servedTermWinsOverTheDate() {
+        // In September the API already serves Spring 2027 sections, so the
+        // export must use Spring dates, not Fall's
+        assertEquals(20270127, activeSemester(20260926, servedTerm = 202701)?.firstClassDayInt)
+    }
+
+    @Test
+    fun servedTermMissingFromTableReturnsNull() {
+        assertNull(activeSemester(20260926, servedTerm = 209901))
+    }
+
+    @Test
+    fun midweekStartPushesEarlierDaysToTheFollowingWeek() {
+        // Spring 2027 starts Wednesday Jan 27: Wednesday meets that day,
+        // Monday's first class is Feb 1, Friday's is Jan 29
+        assertEquals("20270127", icsDateForDay(DayOfWeek.WEDNESDAY, 20270127))
+        assertEquals("20270201", icsDateForDay(DayOfWeek.MONDAY, 20270127))
+        assertEquals("20270129", icsDateForDay(DayOfWeek.FRIDAY, 20270127))
+    }
+
+    @Test
+    fun mwfClassStartsOnTheFirstClassDayNotTheFirstMonday() {
+        val ics = generateIcsContent(
+            listOf(
+                selection(
+                    "Calc",
+                    "0101",
+                    listOf(ClassMeeting.InPerson(Classtime("MWF", 9f, 9.8333f), Location("MTH", "0304")))
+                )
+            ),
+            SemesterDates(20270127, "20270512T035959Z")
+        )
+        assertTrue(ics.contains("DTSTART:20270127T090000"))
+        assertFalse(ics.contains("DTSTART:20270125"))
     }
 
     // ---- Date math (icsDateForDay) ----
@@ -110,8 +148,8 @@ class IcsGenerationTest {
 
     @Test
     fun fridayWrapsAcrossYearBoundary() {
-        // Dec 31 + 4 days -> Jan 4 of the next year.
-        assertEquals("20280104", icsDateForDay(DayOfWeek.FRIDAY, 20271231))
+        // Monday Dec 29, 2025 + 4 days -> Friday Jan 2 of the next year.
+        assertEquals("20260102", icsDateForDay(DayOfWeek.FRIDAY, 20251229))
     }
 
     // ---- Full ICS document (generateIcsContent(selections, semester)) ----

@@ -1,6 +1,7 @@
 package com.jupiterp.jupiterpmobile.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -407,9 +408,44 @@ private fun ScheduleBlockInfoDialog(
                     value = block.location?.display ?: "Online (synchronous)"
                 )
 
-                // Instructors
+                // Instructors; each opens its profile when profiles are available
                 val instructors = block.selection.section.instructors.joinToString(", ")
-                if (instructors.isNotBlank()) {
+                val openProfessor = LocalOpenProfessor.current
+                val links = block.selection.section.instructorLinks
+                if (openProfessor != null && links.isNotEmpty()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = JupiterpTheme.extendedColors.textSecondary
+                        )
+                        Column {
+                            Text(
+                                text = if (links.size == 1) "Instructor" else "Instructors",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = JupiterpTheme.extendedColors.textSecondary
+                            )
+                            links.forEach { (name, slug) ->
+                                Text(
+                                    text = name,
+                                    modifier = Modifier
+                                        .clickable {
+                                            onDismiss()
+                                            openProfessor(ProfessorRef(name, slug))
+                                        }
+                                        .padding(vertical = 2.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = JupiterpTheme.extendedColors.orange
+                                )
+                            }
+                        }
+                    }
+                } else if (instructors.isNotBlank()) {
                     InfoRow(
                         icon = Icons.Outlined.Person,
                         label = "Instructor",

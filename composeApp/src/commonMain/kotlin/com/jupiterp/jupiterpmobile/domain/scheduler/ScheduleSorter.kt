@@ -7,6 +7,7 @@ package com.jupiterp.jupiterpmobile.domain.scheduler
 enum class SortCriterion(val label: String) {
     MOST_CLASSES("Most classes"),
     BEST_RATING("Top rated"),
+    HIGHEST_GPA("Highest GPA"),
     MOST_COMPACT("Fewest gaps"),
     FEWEST_DAYS("Fewest days"),
     LATEST_START("Latest start"),
@@ -20,6 +21,9 @@ fun List<GeneratedSchedule>.sortedByCriterion(criterion: SortCriterion): List<Ge
 // Unrated schedules sort below any rated one rather than competing with them
 private fun GeneratedSchedule.ratingOrUnrated(): Float = metrics.avgInstructorRating ?: -1f
 
+// Likewise, schedules with no grade data sort below any with an expected GPA
+private fun GeneratedSchedule.gpaOrUnknown(): Float = metrics.avgGpa ?: -1f
+
 private fun SortCriterion.comparator(): Comparator<GeneratedSchedule> = when (this) {
     SortCriterion.MOST_CLASSES ->
         compareByDescending<GeneratedSchedule> { it.metrics.sectionCount }
@@ -30,6 +34,11 @@ private fun SortCriterion.comparator(): Comparator<GeneratedSchedule> = when (th
         compareByDescending<GeneratedSchedule> { it.ratingOrUnrated() }
             .thenBy { it.metrics.totalGapMinutes }
             .thenBy { it.metrics.daysWithClasses }
+
+    SortCriterion.HIGHEST_GPA ->
+        compareByDescending<GeneratedSchedule> { it.gpaOrUnknown() }
+            .thenByDescending { it.ratingOrUnrated() }
+            .thenBy { it.metrics.totalGapMinutes }
 
     SortCriterion.MOST_COMPACT ->
         compareBy<GeneratedSchedule> { it.metrics.totalGapMinutes }

@@ -12,3 +12,10 @@ expect fun addToCalendar(selections: List<ScheduleSelection>, onResult: (Boolean
 
 /** Returns today's date as an integer YYYYMMDD (e.g. 20261115 for Nov 15 2026). */
 expect fun currentDateInt(): Int
+
+/**
+ * Opens the system share sheet with [text]. [subject] is used where the
+ * target supports one (email, some messaging apps). Returns false when no
+ * share sheet could be shown.
+ */
+expect fun shareText(text: String, subject: String? = null): Boolean

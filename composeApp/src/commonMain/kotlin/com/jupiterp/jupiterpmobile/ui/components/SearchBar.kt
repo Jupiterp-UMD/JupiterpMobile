@@ -31,6 +31,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.jupiterp.jupiterpmobile.domain.model.Department
 import com.jupiterp.jupiterpmobile.domain.model.GenEdCodes
+import com.jupiterp.jupiterpmobile.domain.model.Instructor
 import com.jupiterp.ui.theme.JupiterpTheme
 
 /**
@@ -50,7 +51,7 @@ fun SearchBar(
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
     onFocused: (() -> Unit)? = null,
-    instructorSuggestions: List<String> = emptyList(),
+    instructorSuggestions: List<Instructor> = emptyList(),
     onInstructorSelected: (String) -> Unit = {},
     suggestionsAbove: Boolean = false,
     selectedInstructor: String? = null,
@@ -62,6 +63,7 @@ fun SearchBar(
     val actualFocusRequester = focusRequester ?: internalFocusRequester
 
     val atIdx = query.indexOf('@')
+    val openProfessor = LocalOpenProfessor.current
     val hasActiveFilters =
         selectedDepartment != null || selectedGenEds.isNotEmpty() || !selectedInstructor.isNullOrEmpty()
 
@@ -79,15 +81,18 @@ fun SearchBar(
                 tonalElevation = 4.dp
             ) {
                 Column {
-                    instructorSuggestions.forEachIndexed { index, name ->
+                    instructorSuggestions.forEachIndexed { index, instructor ->
+                        // Row tap filters courses by this instructor (the
+                        // original @ behavior); the trailing button opens
+                        // their profile instead
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    onInstructorSelected(name)
+                                    onInstructorSelected(instructor.name)
                                     focusManager.clearFocus()
                                 }
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
@@ -98,10 +103,24 @@ fun SearchBar(
                                 modifier = Modifier.size(20.dp)
                             )
                             Text(
-                                text = name,
+                                text = instructor.name,
+                                modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                            RatingChip(rating = instructor.rating)
+                            if (openProfessor != null) {
+                                TextButton(
+                                    onClick = {
+                                        focusManager.clearFocus()
+                                        openProfessor(ProfessorRef(instructor.name, instructor.slug))
+                                    }
+                                ) {
+                                    Text("Profile", color = JupiterpTheme.extendedColors.orange)
+                                }
+                            } else {
+                                Spacer(Modifier.height(48.dp))
+                            }
                         }
                         if (index < instructorSuggestions.lastIndex) {
                             HorizontalDivider(
@@ -255,6 +274,19 @@ fun SearchBar(
                             selected = true,
                             onClick = onClearInstructor
                         )
+                    }
+                    if (openProfessor != null) {
+                        item {
+                            FilterChip(
+                                label = "Profile",
+                                selected = false,
+                                leadingIcon = Icons.Outlined.Person,
+                                onClick = {
+                                    val slug = instructorSuggestionSlug(name, instructorSuggestions)
+                                    openProfessor(ProfessorRef(name, slug))
+                                }
+                            )
+                        }
                     }
                 }
 
@@ -576,3 +608,6 @@ private fun DepartmentPickerDialog(
         }
     )
 }
+/** The slug for a picked instructor name, when the suggestions still carry it. */
+private fun instructorSuggestionSlug(name: String, suggestions: List<Instructor>): String? =
+    suggestions.firstOrNull { it.name == name }?.slug
